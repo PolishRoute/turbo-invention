@@ -1,10 +1,12 @@
+#![allow(dead_code)]
+#![allow(unused_imports)]
 mod parse;
 
 use std::io::{Read, SeekFrom, Seek};
 use std::ops::Range;
 use std::collections::HashMap;
 use std::convert::TryInto;
-use crate::parse::read_bytecode;
+use crate::parse::{read_bytecode, Parser};
 
 type MyError = Box<dyn std::error::Error>;
 
@@ -187,7 +189,9 @@ fn read_script(data: &[u8], use_xor_2: bool, second_level_xor_key: Option<&[XorK
         null: None,
     };
 
-    read_bytecode(&uncompressed, &cd.kidoku_table);
+    let mut parser = Parser::new(&uncompressed);
+    // std::fs::write("script.txt", &uncompressed).unwrap();
+    read_bytecode(&mut parser, &cd.kidoku_table);
 }
 
 

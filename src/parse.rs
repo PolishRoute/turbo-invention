@@ -1,28 +1,32 @@
-use crate::read_i16;
 use std::convert::TryInto;
+use std::io::Cursor;
 
-pub(crate) fn read_bytecode(bc: &[u8], table: &[usize]) {
+use crate::read_i16;
+
+pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) {
     let mut elements = Vec::new();
     let mut entrypoint_marker = b'@';
 
     // Read bytecode
-    let mut pos = 0;
-    while pos < bc.len() {
-        // Read element
-        if bc[pos] == b'!' {
+    while let Some(c) = parser.current() {
+        if c == b'!' {
             entrypoint_marker = b'!';
         }
 
-        let element = match dbg!(bc[pos]) {
+        // Read element
+        let element = match c {
             0 | b',' => {
+                parser.advance(1);
                 Element::Comma
             }
             b'\n' => {
-                let value = read_i16(&bc[pos + 1..]) as usize;
+                parser.advance(1);
+                let value = i16::from_le_bytes(parser.consume_n()) as usize;
                 Element::Line(value)
             }
             b'@' | b'!' => {
-                let value = read_i16(&bc[pos + 1..]);
+                parser.advance(1);
+                let value = i16::from_le_bytes(parser.consume_n());
                 let val = table[value as usize];
                 if val >= 1_000_000 {
                     Element::Entrypoint(val - 1_000_000)
@@ -31,69 +35,107 @@ pub(crate) fn read_bytecode(bc: &[u8], table: &[usize]) {
                 }
             }
             b'$' => {
-                let mut x = Parser::new(&bc[pos..]);
-                dbg!(x.assign());
-
-                Element::Expr
+                let expr = parser.assign();
+                Element::Expr(expr)
             }
             b'#' => {
-                read_function(&bc[pos..]);
+                parser.advance(1);
+                read_function(&mut *parser, table);
                 Element::Bytecode
             }
             _ => {
-                let mut end = pos;
+                let start = parser.pos;
                 let mut quoted = false;
-                while end < bc.len() {
+                while let Some(c) = parser.current() {
                     if quoted {
-                        quoted = bc[end] != b'"';
-                        if bc[end] == b'\\' && bc[end + 1] == b'"' {
-                            end += 1;
-                        }
+                        quoted = parser.current().unwrap() != b'"';
+                        parser.consume_slice(b"\\\"");
                     } else {
-                        if bc[end] == b',' {
-                            end += 1;
-                        }
-
-                        quoted = bc[end] == b'"';
-                        if matches!(bc[end], b'#' | b'$' | b'\n' | b'@') || bc[end] == entrypoint_marker {
+                        parser.consume_exact(b',');
+                        quoted = parser.current().unwrap() == b'"';
+                        if matches!(parser.current().unwrap(), b'#' | b'$' | b'\n' | b'@') ||
+                            parser.current().unwrap() == entrypoint_marker {
                             break;
                         }
                     }
 
-                    if matches!(bc[end], 0x81..=0x9f | 0xe9..=0xef) {
-                        end += 2;
+                    if matches!(parser.current().unwrap(), 0x81..=0x9f | 0xe0..=0xef) {
+                        parser.advance(2);
                     } else {
-                        end += 1;
+                        parser.advance(1);
                     }
                 }
-
-                dbg!(std::str::from_utf8(&bc[pos..end]));
-
-                panic!();
+                dbg!(std::str::from_utf8(&parser.bc[start..parser.pos]));
                 Element::Textout
             }
         };
-        pos += element.len();
         elements.push(dbg!(element));
     }
 
     dbg!(elements);
 }
 
-fn read_function(code: &[u8]) {
+#[cfg(test)]
+mod tests {
+    use crate::parse::{Parser, read_bytecode, read_function};
+
+    #[test]
+    fn assignment() {
+        let mut p = Parser::new(&[
+            0x24, 0x00, 0x5b, // 0x00 [
+            0x24, 0xff, 0x01, 0x00, 0x00, 0x00, // const 1
+            0x5d, // ]
+            0x5c, 0x1e, // op=1e
+            0x24, 0xff, 0x00, 0x00, 0x00, 0x00 // const 0
+        ]);
+        let expr = p.assign();
+        dbg!(expr);
+    }
+
+    #[test]
+    fn foo() {
+        let mut p = Parser::new(&[
+            0x23, 0x00, 0x01, 0x0c, 0x00, 0x02, 0x00, 0x01,
+            0x28, // (
+            0x24, 0xff, 0x75, 0x23, 0x00, 0x00,
+            0x24, 0xff, 0x00, 0x00, 0x00, 0x00,
+            0x29, // )
+        ]);
+        let e = read_bytecode(&mut p, &[]);
+    }
+
+    #[test]
+    fn foo2() {
+        let mut p = Parser::new(&[
+            0x23, 0x01, 0x04, 0x72, 0x00, 0x00, 0x00, 0x01,
+            0x24, 0x00, 0x5b,
+            0x24, 0xff, 0x03, 0x00, 0x00, 0x00,
+            0x5d,
+            0x5c, 0x1e, 0x24, 0xc8
+        ]);
+        let e = read_function(&mut p, &[]);
+    }
+}
+
+fn read_function(parser: &mut Parser, table: &[usize]) {
     // opcode: 0xttmmoooo (Type, Module, Opcode: e.g. 0x01030101 = 1:03:00257
     let opcode =
-        ((code[1] as u32) << 24) |
-            ((code[2] as u32) << 16) |
-            ((code[4] as u32) << 8) |
-            (code[3] as u32);
+        ((parser.slice()[0] as u32) << 24) |
+            ((parser.slice()[1] as u32) << 16) |
+            ((parser.slice()[3] as u32) << 8) |
+            (parser.slice()[2] as u32);
+
     match opcode {
         0x00010000 |
         0x00010005 |
         0x00050001 |
         0x00050005 |
         0x00060001 |
-        0x00060005 => panic!("goto"),
+        0x00060005 => {
+            let id = i32::from_le_bytes(parser.consume_n());
+            dbg!(id);
+            // goto
+        }
         0x00010001 |
         0x00010002 |
         0x00010006 |
@@ -104,7 +146,12 @@ fn read_function(code: &[u8]) {
         0x00060000 |
         0x00060002 |
         0x00060006 |
-        0x00060007 => panic!("gotoif"),
+        0x00060007 => {
+            let chunk = parser.consume_n::<7>();
+            parser.expect(b'(');
+            let p = parser.expr();
+            parser.expect(b')');
+        }
         0x00010003 |
         0x00010008 |
         0x00050003 |
@@ -123,24 +170,38 @@ fn read_function(code: &[u8]) {
         0x00020001 |
         0x00020002 |
         0x00020003 |
-        0x00020010 => panic!("select"),
-        _ => {
-            if code[8] == b'(' {
+        0x00020010 => select(&mut *parser),
+        oth => {
+            parser.advance(7);
 
+            let mut params = Vec::new();
+            if parser.consume_exact(b'(') {
+                while parser.current() != Some(b')') {
+                    params.push(parser.param());
+                }
+                parser.consume();
             }
-
-            panic!("{:?}", std::str::from_utf8(&code[8..10]))
-        },
+            dbg!(params);
+        }
     }
 }
 
-struct Parser<'bc> {
+fn select(parser: &mut Parser) {
+    let x = parser.consume_n::<7>();
+    if parser.consume_exact(b'(') {
+        let expr = parser.expr_term();
+        dbg!(expr);
+    }
+    parser.dbg();
+}
+
+pub(crate) struct Parser<'bc> {
     bc: &'bc [u8],
     pos: usize,
 }
 
 impl<'bc> Parser<'bc> {
-    fn new(data: &[u8]) -> Parser {
+    pub(crate) fn new(data: &[u8]) -> Parser {
         Parser {
             bc: data,
             pos: 0,
@@ -151,12 +212,14 @@ impl<'bc> Parser<'bc> {
         self.bc.get(self.pos).copied()
     }
 
+    #[track_caller]
     fn consume(&mut self) -> Option<u8> {
         let b = self.current()?;
-        self.pos += 1;
+        self.advance(1);
         Some(b)
     }
 
+    #[track_caller]
     fn consume_if(&mut self, predicate: impl FnOnce(u8) -> bool) -> Option<u8> {
         let c = self.current()?;
         if predicate(c) {
@@ -166,27 +229,30 @@ impl<'bc> Parser<'bc> {
         }
     }
 
-    fn consume_exact(&mut self, b: u8) -> Option<u8> {
-        self.consume_if(|v| v == b)
+    #[track_caller]
+    fn consume_exact(&mut self, b: u8) -> bool {
+        self.consume_if(|v| v == b).is_some()
     }
 
+    #[track_caller]
     fn consume_slice(&mut self, s: &[u8]) -> bool {
-        if &self.bc[self.pos..] == s {
-            self.pos += s.len();
+        if self.bc[self.pos..].starts_with(s) {
+            self.advance(s.len());
             true
         } else {
             false
         }
     }
 
+    #[track_caller]
     fn expect(&mut self, b: u8) {
-        assert_eq!(self.current(), Some(b))
+        assert_eq!(self.consume(), Some(b));
     }
 
     fn assign(&mut self) -> Expr {
         let itok = self.expr_term();
-        let op = self.slice()[1];
-        self.pos += 2;
+        let _unknown = self.consume();
+        let op = self.consume().unwrap();
         let etok = self.expr();
         if op >= 0x14 && op <= 0x24 {
             Expr::BinaryExpr(op, Box::new(itok), Box::new(etok))
@@ -196,18 +262,27 @@ impl<'bc> Parser<'bc> {
     }
 
     fn expr_term(&mut self) -> Expr {
-        if self.consume_exact(b'$').is_some() {
-            self.expr_token()
-        } else if self.consume_slice(b"\n\x00") {
+        if self.consume_slice(b"$\xff") {
+            let val = self.consume_n();
+            Expr::IntConst { value: i32::from_le_bytes(val) }
+        } else if self.consume_slice(b"$\xc8") {
+            Expr::StoreRegister
+        } else if let [b'$', _, b'[', ..] = self.slice() {
+            let [_, ty, _] = self.consume_n();
+            let location = self.expr();
+            self.expect(b']');
+            Expr::MemRef(ty, Box::new(location))
+        } else if self.consume_slice(b"\\\x00") {
             self.expr_term()
-        } else if self.consume_slice(b"\n\x01") {
+        } else if self.consume_slice(b"\\\x01") {
             let expr = self.expr_term();
             Expr::UnaryExpr(0x1, Box::new(expr))
-        } else if self.consume_exact(b'(').is_some() {
+        } else if self.consume_exact(b'(') {
             let expr = self.expr_bool();
             self.expect(b')');
             expr
         } else {
+            self.dbg();
             panic!("unexpected {:?}", self.current());
         }
     }
@@ -247,9 +322,9 @@ impl<'bc> Parser<'bc> {
     }
 
     fn expr_cond_loop(&mut self, tok: Expr) -> Expr {
-        if let [b'\\', op @ 0x28..=0x2d] = self.slice() {
+        if let [b'\\', op @ 0x28..=0x2d, ..] = self.slice() {
             let op = *op;
-            self.pos += 2;
+            self.advance(2);
             let rhs = self.expr_arithm();
             let new_piece = Expr::BinaryExpr(op, Box::new(tok), Box::new(rhs));
             self.expr_cond_loop(new_piece)
@@ -267,7 +342,7 @@ impl<'bc> Parser<'bc> {
     fn expr_arithm_loop(&mut self, tok: Expr) -> Expr {
         if let [b'\\', op @ (0x00 | 0x01)] = self.slice() {
             let op = *op;
-            self.pos += 2;
+            self.advance(2);
             let other = self.expr_term();
             let rhs = self.expr_arithm_loop_hi_prec(other);
             let new_piece = Expr::BinaryExpr(op, Box::new(tok), Box::new(rhs));
@@ -280,7 +355,7 @@ impl<'bc> Parser<'bc> {
     fn expr_arithm_loop_hi_prec(&mut self, tok: Expr) -> Expr {
         if let [b'\\', op @ 0x02..=0x09] = self.slice() {
             let op = *op;
-            self.pos += 2;
+            self.advance(2);
             let new_piece = Expr::BinaryExpr(op, Box::new(tok), Box::new(self.expr_term()));
             self.expr_arithm_loop_hi_prec(new_piece)
         } else {
@@ -292,53 +367,55 @@ impl<'bc> Parser<'bc> {
         self.expr_bool()
     }
 
+    #[track_caller]
     fn consume_n<const N: usize>(&mut self) -> [u8; N] {
-        self.bc[self.pos..][..N].try_into().unwrap()
+        let r = self.slice()[..N].try_into().unwrap();
+        self.advance(N);
+        r
     }
 
-    fn expr_token(&mut self) -> Expr {
-        if self.consume_exact(0xff).is_some() {
-            Expr::IntConst { value: i32::from_le_bytes(self.consume_n()) }
-        } else if self.consume_exact(0xc8).is_some() {
-            Expr::StoreRegister
-        } else if let [ty, b']'] = self.consume_n() {
-            let location = self.expr();
-            if self.current() != Some(b']') {
-                panic!("unexpected");
-            }
-            Expr::MemRef(ty, Box::new(location))
-        } else {
-            panic!("unexpected {:?}", self.current());
+    #[track_caller]
+    fn advance(&mut self, n: usize) {
+        print!("{} {:04}: ", std::panic::Location::caller(), self.pos);
+        for i in 0..n {
+            print!("{:02x} ", self.slice().get(i).copied().unwrap_or(0))
         }
+        println!();
+        self.pos += n;
+    }
+
+    #[track_caller]
+    fn dbg(&self) {
+        println!("{} {:x} @ {}",
+                 std::panic::Location::caller(),
+                 self.current().unwrap_or(0), self.pos);
+    }
+
+    fn param(&mut self) -> Expr {
+        if self.consume_exact(b',') {
+            self.param()
+        } else if self.consume_exact(b'\n') {
+            self.advance(2);
+            self.param()
+        } else if is_string_char(self.current().unwrap()) || self.slice().starts_with(b"###PRINT(") {
+            self.string()
+        } else {
+            self.expr()
+        }
+    }
+
+    fn string(&mut self) -> Expr {
+        let start = self.pos;
+        while let Some(c) = self.consume_if(|b| b.is_ascii_alphanumeric()) {
+            // TODO: more characters + escaping
+        }
+        Expr::StringConst {value: std::str::from_utf8(&self.bc[start..self.pos]).unwrap().to_string()}
     }
 }
 
-
-// fn assignment(s: &[u8]) -> (Expr, &[u8]) {
-//     let (itok, s) = expr_term(s);
-//     let op = s[1];
-//     let s = &s[2..];
-//     let (etok, s) = expr(s);
-//     if op >= 0x14 && op <= 0x24 {
-//         (Expr::BinaryExpr(op, Box::new(itok), Box::new(etok)), s)
-//     } else {
-//         panic!("undefined assignment")
-//     }
-// }
-//
-// fn expr(s: &[u8]) -> (Expr, &[u8]) {
-//     expr_bool(s)
-// }
-//
-// fn expr_bool(s: &[u8]) -> (Expr, &[u8]) {
-//     expr_bool_loop_or(src)
-// }
-//
-// fn expr_bool_loop_or(s: &[u8]) -> (Expr, &[u8]) {
-//     match s {
-//         [b'\\', b'=', s @ ..] => {}
-//     }
-// }
+fn is_string_char(b: u8) -> bool {
+    matches!(b, 0x81..=0x9f | 0xe0..=0xef | b'A'..=b'Z' | b'0'..=b'9' | b' ' | b'?' | b'_' | b'"')
+}
 
 #[derive(Debug)]
 enum Element {
@@ -346,7 +423,7 @@ enum Element {
     Entrypoint(usize),
     Kidoku(usize),
     Line(usize),
-    Expr,
+    Expr(Expr),
     Bytecode,
     Textout,
 }
@@ -358,26 +435,13 @@ impl Element {
             Element::Entrypoint(_) => 3,
             Element::Kidoku(_) => 3,
             Element::Line(_) => 3,
-            Element::Expr => todo!(),
+            Element::Expr(_) => todo!(),
             Element::Bytecode => todo!(),
             Element::Textout => todo!(),
         }
     }
 }
 
-
-//
-// fn expr_token() -> (Expr, &[u8]) {
-//     todo!()
-// }
-
-
-//
-// fn next_token(c: &mut Cursor) {
-//
-// }
-//
-//
 #[derive(Debug)]
 enum Expr {
     StoreRegister,
