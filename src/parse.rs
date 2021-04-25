@@ -142,6 +142,7 @@ fn read_function(parser: &mut Parser, table: &[usize]) -> Element {
         0x00050005 |
         0x00060001 |
         0x00060005 => {
+            let _chunk = parser.consume_n::<7>();
             let id = i32::from_le_bytes(parser.consume_n()) as usize;
             Element::Goto(id)
         }
@@ -160,7 +161,8 @@ fn read_function(parser: &mut Parser, table: &[usize]) -> Element {
             parser.expect(b'(');
             let p = parser.expr();
             parser.expect(b')');
-            Element::GotoIf(0, p)
+            let id = i32::from_le_bytes(parser.consume_n()) as usize;
+            Element::GotoIf(id, p)
         }
         0x00010003 |
         0x00010008 |
