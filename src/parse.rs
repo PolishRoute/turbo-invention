@@ -44,7 +44,32 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) {
                 Element::Bytecode(Box::new(element))
             }
             _ => {
-                Element::Textout(parser.str(entrypoint_marker))
+                let mut s = Vec::new();
+                let mut is_quoted = false;
+                while let Some(c) = parser.current() {
+                    match c {
+                        b'"' => {
+                            parser.advance(1);
+                            s.push(c);
+                            if is_quoted {
+                                break;
+                            }
+                            is_quoted = !is_quoted;
+                            continue;
+                        }
+                        b'\\' if is_quoted => {
+                            parser.advance(1);
+                            s.push(parser.consume().unwrap());
+                        }
+                        _ => {
+                            parser.advance(1);
+                            s.push(c);
+                        }
+                        b'#' | b'$' | b'\n' | b'@' | 0 => break,
+                    }
+                }
+                assert!(!s.is_empty());
+                Element::Textout(encoding_rs::SHIFT_JIS.decode(&s).0.into_owned())
             }
         };
         match &element {
@@ -444,6 +469,8 @@ impl<'bc> Parser<'bc> {
     fn param(&mut self) -> Expr {
         if self.consume_exact(b',') {
             self.param()
+        } else if self.consume_exact(b'(') {
+            todo!()
         } else if self.consume_exact(b'\n') {
             self.advance(2);
             self.param()
@@ -478,85 +505,52 @@ impl<'bc> Parser<'bc> {
 
             Expr::ComplexExpr { exprs }
         } else {
+            // todo!();
             self.expr()
         }
     }
 
     fn string(&mut self) -> Expr {
-        Expr::StringConst { value: self.str2() }
+        Expr::StringConst { value: self.str() }
     }
 
-    fn str(&mut self, entrypoint_marker: u8) -> String {
-        let mut quoted = false;
-        let mut out = String::new();
+    fn str(&mut self) -> String {
+        let mut s = Vec::new();
+        let mut is_quoted = false;
         while let Some(c) = self.current() {
-            if matches!(c, b'#' | b'$' | b'\n' | b'@') || c == entrypoint_marker {
-                break;
-            }
-
-            if self.consume_exact(b'"') {
-                quoted = !quoted;
-            } else if quoted && self.current() == Some(b'\\') {
-                self.consume();
-                if self.consume_exact(b'"') {
-                    out.push('"');
-                } else {
-                    out.push('\\');
-                }
-
-                quoted = self.current().unwrap() != b'"';
-                if let [b'\\', b'\"', ..] = self.slice() {
+            match c {
+                b'"' => {
+                    is_quoted = !is_quoted;
                     self.advance(1);
+                    s.push(c);
+                    continue;
                 }
-            } else {
-                let c = self.consume().unwrap();
-                if matches!(c, 0x81..=0x9f | 0xe0..=0xef) {
-                    out.push(c as char);
+                b'\\' if is_quoted => {
+                    self.advance(1);
+                    s.push(self.consume().unwrap());
                 }
-                out.push(c as char);
-            }
-        }
-        out
-    }
-
-    fn str2(&mut self) -> String {
-        let mut str = String::new();
-
-        if self.consume_exact(b'"') {
-            // Quoted string
-            loop {
-                let was_escaped = self.consume_exact(b'\\');
-                if self.consume_exact(b'"') && !was_escaped {
-                    break;
-                } else {
-                    str.push(self.consume().unwrap() as char);
+                0x81..=0x9f | 0xe0..=0xef => {
+                    self.advance(1);
+                    // CP936 crap
+                    s.push(c);
+                    s.push(self.consume().unwrap());
                 }
-            }
-        } else {
-            // Unquoted string
-            if self.slice().starts_with(b"###PRINT(") {
-                self.advance(9);
-                self.expr();
-                self.expect(b')');
-                return str;
-            }
-
-            loop {
-                let c = self.current().unwrap();
-                if is_string_char(c) {
-                    str.push(c as char);
-                } else {
+                _ if self.slice().starts_with(b"###PRINT(") => {
+                    self.advance(9);
+                    self.expr();
+                    self.expect(b')');
                     break;
                 }
-                if let Some(0x81..=0x9f | 0xe0..=0xef) = self.current() {
-                    self.advance(2);
-                } else {
+                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b' ' | b'?' | b'_' => {
                     self.advance(1);
+                    s.push(c);
                 }
+                _ => break,
             }
         }
+        assert!(!s.is_empty());
 
-        str
+        encoding_rs::SHIFT_JIS.decode(&s).0.into_owned()
     }
 }
 
