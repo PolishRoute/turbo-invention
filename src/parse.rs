@@ -10,7 +10,7 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) {
     // Read bytecode
     while let Some(c) = parser.current() {
         if c == b'!' {
-            entrypoint_marker = b'!';
+            // entrypoint_marker = b'!';
         }
 
         // Read element
@@ -44,29 +44,36 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) {
                 Element::Bytecode(Box::new(element))
             }
             _ => {
-                let start = parser.pos;
                 let mut quoted = false;
-                while let Some(_) = parser.current() {
-                    if quoted {
-                        quoted = parser.current().unwrap() != b'"';
-                        parser.consume_slice(b"\\\"");
-                    } else {
-                        parser.consume_exact(b',');
-                        quoted = parser.current().unwrap() == b'"';
-                        if matches!(parser.current().unwrap(), b'#' | b'$' | b'\n' | b'@') ||
-                            parser.current().unwrap() == entrypoint_marker {
-                            break;
-                        }
+                let mut out = String::new();
+                while let Some(c) = parser.current() {
+                    if matches!(c, b'#' | b'$' | b'\n' | b'@') || c == entrypoint_marker {
+                        break;
                     }
 
-                    if matches!(parser.current().unwrap(), 0x81..=0x9f | 0xe0..=0xef) {
-                        parser.advance(2);
+                    if parser.consume_exact(b'"') {
+                        quoted = !quoted;
+                    } else if quoted && parser.current() == Some(b'\\') {
+                        parser.consume();
+                        if parser.consume_exact(b'"') {
+                            out.push('"');
+                        } else {
+                            out.push('\\');
+                        }
+
+                        quoted = parser.current().unwrap() != b'"';
+                        if let [b'\\', b'\"', ..] = parser.slice() {
+                            parser.advance(1);
+                        }
                     } else {
-                        parser.advance(1);
+                        let c = parser.consume().unwrap();
+                        if matches!(c, 0x81..=0x9f | 0xe0..=0xef) {
+                            out.push(c as char);
+                        }
+                        out.push(c as char);
                     }
                 }
-                dbg!(std::str::from_utf8(&parser.bc[start..parser.pos]));
-                Element::Textout
+                Element::Textout(out)
             }
         };
         match &element {
@@ -76,7 +83,7 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) {
             Element::Line(ep) => println!("Line #{}", ep),
             Element::Expr(epr) => println!("{:?}", epr),
             Element::Bytecode(bc) => println!("Bytecode: {:?}", bc),
-            Element::Textout => println!(">> {}", "TO"),
+            Element::Textout(s) => println!(">> {}", s),
             Element::FunctionCall { .. } => todo!(),
             Element::Goto(_) => todo!(),
             Element::GotoIf(_, _) => todo!(),
@@ -201,29 +208,38 @@ fn read_function(parser: &mut Parser, table: &[usize]) -> Element {
 }
 
 fn select(parser: &mut Parser) -> Element {
-    let x = parser.consume_n::<7>();
+    let [.., argc1, argc2] = parser.consume_n::<7>();
     if parser.consume_exact(b'(') {
         let expr = parser.expr_term();
         dbg!(expr);
     }
+    parser.expect(b'{');
+    let x = if parser.consume_exact(b'\n') {
+        i16::from_le_bytes(parser.consume_n()) as u16
+    } else {
+        0
+    };
+
+
+
     todo!()
 }
 
 pub(crate) struct Parser<'bc> {
-    bc: &'bc [u8],
+    data: &'bc [u8],
     pos: usize,
 }
 
 impl<'bc> Parser<'bc> {
-    pub(crate) fn new(data: &[u8]) -> Parser {
+    pub(crate) fn new(data: &[u8], pos: usize) -> Parser {
         Parser {
-            bc: data,
-            pos: 0,
+            data,
+            pos,
         }
     }
 
     fn current(&self) -> Option<u8> {
-        self.bc.get(self.pos).copied()
+        self.data.get(self.pos).copied()
     }
 
     #[track_caller]
@@ -250,7 +266,7 @@ impl<'bc> Parser<'bc> {
 
     #[track_caller]
     fn consume_slice(&mut self, s: &[u8]) -> bool {
-        if self.bc[self.pos..].starts_with(s) {
+        if self.data[self.pos..].starts_with(s) {
             self.advance(s.len());
             true
         } else {
@@ -286,6 +302,9 @@ impl<'bc> Parser<'bc> {
             let location = self.expr();
             self.expect(b']');
             Expr::MemRef(ty, Box::new(location))
+        } else if self.consume_slice(b"$\x00") {
+            self.consume_n::<4>();
+            Expr::Ox2400
         } else if self.consume_slice(b"\\\x00") {
             self.expr_term()
         } else if self.consume_slice(b"\\\x01") {
@@ -332,7 +351,7 @@ impl<'bc> Parser<'bc> {
     }
 
     fn slice(&self) -> &[u8] {
-        &self.bc[self.pos..]
+        &self.data[self.pos..]
     }
 
     fn expr_cond_loop(&mut self, tok: Expr) -> Expr {
@@ -448,10 +467,14 @@ impl<'bc> Parser<'bc> {
 
     fn string(&mut self) -> Expr {
         let start = self.pos;
-        while let Some(c) = self.consume_if(|b| b.is_ascii_alphanumeric()) {
-            // TODO: more characters + escaping
+        if self.consume_exact(b'"') {
+            while let Some(c) = self.consume_if(|b| b != b'"') {}
+            self.expect(b'"');
+        } else {
+            while let Some(_) = self.consume_if(|b| b.is_ascii_alphanumeric()) {}
         }
-        Expr::StringConst { value: std::str::from_utf8(&self.bc[start..self.pos]).unwrap().to_string() }
+        let t = std::str::from_utf8(&self.data[start..self.pos]).unwrap();
+        Expr::StringConst { value: dbg!(t.to_string()) }
     }
 }
 
@@ -467,7 +490,7 @@ enum Element {
     Line(usize),
     Expr(Expr),
     Bytecode(Box<Element>),
-    Textout,
+    Textout(String),
     FunctionCall { modtype: u8, module: u8, opcode: u16, argc: u16, params: Vec<Expr> },
     Goto(usize),
     GotoIf(usize, Expr),
@@ -482,7 +505,7 @@ impl Element {
             Element::Line(_) => 3,
             Element::Expr(_) => todo!(),
             Element::Bytecode(_) => todo!(),
-            Element::Textout => todo!(),
+            Element::Textout(_) => todo!(),
             Element::FunctionCall { .. } => todo!(),
             Element::Goto(_) => todo!(),
             Element::GotoIf(_, _) => todo!(),
@@ -502,6 +525,7 @@ enum Expr {
     ComplexExpr { exprs: Vec<Expr> },
     SpecialExpr { tag: u16, exprs: Vec<Expr> },
     Command { params: Vec<Expr> },
+    Ox2400,
 }
 
 impl std::fmt::Debug for Expr {
@@ -511,11 +535,20 @@ impl std::fmt::Debug for Expr {
             Expr::IntConst { value } => write!(f, "{}", value)?,
             Expr::StringConst { value } => write!(f, "{:?}", value)?,
             Expr::MemRef(place, index) => write!(f, "{}[{:?}]", match *place {
-                int @ 0..=5 => (b'A' + int) as char,
-                other => other as char,
+                int @ 0..=6 => ((b'A' + int) as char).to_string(),
+                intzl @ 7..=8 => ((b'A' + intzl) as char).to_string(),
+                0x0a => "strK".to_string(),
+                0x0C => "strM".to_string(),
+                0x12 => "strS".to_string(),
+                25 => "intZ".to_string(),
+                11 => "intL".to_string(),
+                other => todo!("{}", other),
             }, index)?,
             Expr::SimpleMemRef => todo!(),
-            Expr::UnaryExpr(op, expr) => write!(f, "{}({:?})", op, expr)?,
+            Expr::UnaryExpr(op, expr) => write!(f, "{}{:?}", match op {
+                1 => "-",
+                _ => todo!(),
+            }, expr)?,
             Expr::BinaryExpr(op, lhs, rhs) => write!(f, "{:?} {} {:?}", lhs, match *op {
                 0 | 20 => "+",
                 1 | 21 => "-",
@@ -540,8 +573,9 @@ impl std::fmt::Debug for Expr {
             }, rhs)?,
             Expr::SimpleAssignment => todo!(),
             Expr::ComplexExpr { .. } => todo!(),
-            Expr::SpecialExpr { tag, exprs } => write!(f, "{}:{:?}", tag, exprs)?,
+            Expr::SpecialExpr { tag, exprs } => write!(f, "special({}:{:?})", tag, exprs)?,
             Expr::Command { .. } => todo!(),
+            Expr::Ox2400 => write!(f, "UNKNOWN")?,
         }
         Ok(())
     }
