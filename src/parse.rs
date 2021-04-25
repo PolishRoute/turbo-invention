@@ -5,7 +5,7 @@ use crate::read_i16;
 
 pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) {
     let mut elements = Vec::new();
-    let mut entrypoint_marker = b'@';
+    let entrypoint_marker = b'@';
 
     // Read bytecode
     while let Some(c) = parser.current() {
@@ -40,40 +40,11 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) {
             }
             b'#' => {
                 parser.advance(1);
-                let element = read_function(&mut *parser, table);
+                let element = read_function(&mut *parser);
                 Element::Bytecode(Box::new(element))
             }
             _ => {
-                let mut quoted = false;
-                let mut out = String::new();
-                while let Some(c) = parser.current() {
-                    if matches!(c, b'#' | b'$' | b'\n' | b'@') || c == entrypoint_marker {
-                        break;
-                    }
-
-                    if parser.consume_exact(b'"') {
-                        quoted = !quoted;
-                    } else if quoted && parser.current() == Some(b'\\') {
-                        parser.consume();
-                        if parser.consume_exact(b'"') {
-                            out.push('"');
-                        } else {
-                            out.push('\\');
-                        }
-
-                        quoted = parser.current().unwrap() != b'"';
-                        if let [b'\\', b'\"', ..] = parser.slice() {
-                            parser.advance(1);
-                        }
-                    } else {
-                        let c = parser.consume().unwrap();
-                        if matches!(c, 0x81..=0x9f | 0xe0..=0xef) {
-                            out.push(c as char);
-                        }
-                        out.push(c as char);
-                    }
-                }
-                Element::Textout(out)
+                Element::Textout(parser.str(entrypoint_marker))
             }
         };
         match &element {
@@ -87,6 +58,7 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) {
             Element::FunctionCall { .. } => todo!(),
             Element::Goto(_) => todo!(),
             Element::GotoIf(_, _) => todo!(),
+            Element::Select { params } => println!("select: {:?}", params),
         }
         elements.push(element);
     }
@@ -134,7 +106,7 @@ mod tests {
     }
 }
 
-fn read_function(parser: &mut Parser, table: &[usize]) -> Element {
+fn read_function(parser: &mut Parser) -> Element {
     // opcode: 0xttmmoooo (Type, Module, Opcode: e.g. 0x01030101 = 1:03:00257
     let opcode =
         ((parser.slice()[0] as u32) << 24) |
@@ -190,11 +162,9 @@ fn read_function(parser: &mut Parser, table: &[usize]) -> Element {
         0x00020002 |
         0x00020003 |
         0x00020010 => select(&mut *parser),
-        oth => {
-            let [modtype, module, opcode1, opcode2, argc1, argc2, overload] = parser.consume_n();
-            let opcode = (opcode2 as u16) << 8 | (opcode1 as u16);
-            let argc = (argc2 as u16) << 8 | (argc1 as u16);
-
+        _ => {
+            // Other opcodes
+            let meta = read_call_meta(parser);
             let mut params = Vec::new();
             if parser.consume_exact(b'(') {
                 while parser.current() != Some(b')') {
@@ -202,13 +172,35 @@ fn read_function(parser: &mut Parser, table: &[usize]) -> Element {
                 }
                 parser.consume();
             }
-            Element::FunctionCall { modtype, module, opcode, argc, params }
+            Element::FunctionCall { meta, params }
         }
     }
 }
 
+#[derive(Debug)]
+struct CallMeta {
+    modtype: u8,
+    module: u8,
+    opcode: u16,
+    argc: u16,
+    overload: u8,
+}
+
+fn read_call_meta(parser: &mut Parser) -> CallMeta {
+    let [modtype, module, opcode1, opcode2, argc1, argc2, overload] = parser.consume_n();
+    let opcode = (opcode2 as u16) << 8 | (opcode1 as u16);
+    let argc = (argc2 as u16) << 8 | (argc1 as u16);
+    CallMeta {
+        modtype,
+        module,
+        opcode,
+        argc,
+        overload,
+    }
+}
+
 fn select(parser: &mut Parser) -> Element {
-    let [.., argc1, argc2] = parser.consume_n::<7>();
+    let meta = read_call_meta(parser);
     if parser.consume_exact(b'(') {
         let expr = parser.expr_term();
         dbg!(expr);
@@ -219,10 +211,35 @@ fn select(parser: &mut Parser) -> Element {
     } else {
         0
     };
+    println!("{}", x);
 
+    let mut params = Vec::new();
+    for _ in 0..meta.argc {
+        // Skip preliminary metadata.
+        while parser.consume_exact(b',') {}
 
+        // Read condition, if present.
+        if parser.consume_exact(b'(') {
+            while parser.current() != Some(b')') {
+                let cond = parser.expr();
+                panic!("{:?}", cond);
+            }
+            parser.expect(b')');
+        }
 
-    todo!()
+        // Read text
+        let str = parser.string();
+        parser.expect(b'\n');
+        let lnum = i16::from_le_bytes(parser.consume_n());
+        params.push((lnum as u16, str));
+    }
+
+    while parser.consume_exact(b'\n') {
+        // The only thing allowed other than a 16 bit integer.
+        parser.advance(2);
+    }
+
+    Element::Select { params }
 }
 
 pub(crate) struct Parser<'bc> {
@@ -373,7 +390,7 @@ impl<'bc> Parser<'bc> {
     }
 
     fn expr_arithm_loop(&mut self, tok: Expr) -> Expr {
-        if let [b'\\', op @ (0x00 | 0x01)] = self.slice() {
+        if let [b'\\', op @ (0x00 | 0x01), ..] = self.slice() {
             let op = *op;
             self.advance(2);
             let other = self.expr_term();
@@ -386,7 +403,7 @@ impl<'bc> Parser<'bc> {
     }
 
     fn expr_arithm_loop_hi_prec(&mut self, tok: Expr) -> Expr {
-        if let [b'\\', op @ 0x02..=0x09] = self.slice() {
+        if let [b'\\', op @ 0x02..=0x09, ..] = self.slice() {
             let op = *op;
             self.advance(2);
             let new_piece = Expr::BinaryExpr(op, Box::new(tok), Box::new(self.expr_term()));
@@ -466,15 +483,80 @@ impl<'bc> Parser<'bc> {
     }
 
     fn string(&mut self) -> Expr {
-        let start = self.pos;
-        if self.consume_exact(b'"') {
-            while let Some(c) = self.consume_if(|b| b != b'"') {}
-            self.expect(b'"');
-        } else {
-            while let Some(_) = self.consume_if(|b| b.is_ascii_alphanumeric()) {}
+        Expr::StringConst { value: self.str2() }
+    }
+
+    fn str(&mut self, entrypoint_marker: u8) -> String {
+        let mut quoted = false;
+        let mut out = String::new();
+        while let Some(c) = self.current() {
+            if matches!(c, b'#' | b'$' | b'\n' | b'@') || c == entrypoint_marker {
+                break;
+            }
+
+            if self.consume_exact(b'"') {
+                quoted = !quoted;
+            } else if quoted && self.current() == Some(b'\\') {
+                self.consume();
+                if self.consume_exact(b'"') {
+                    out.push('"');
+                } else {
+                    out.push('\\');
+                }
+
+                quoted = self.current().unwrap() != b'"';
+                if let [b'\\', b'\"', ..] = self.slice() {
+                    self.advance(1);
+                }
+            } else {
+                let c = self.consume().unwrap();
+                if matches!(c, 0x81..=0x9f | 0xe0..=0xef) {
+                    out.push(c as char);
+                }
+                out.push(c as char);
+            }
         }
-        let t = std::str::from_utf8(&self.data[start..self.pos]).unwrap();
-        Expr::StringConst { value: dbg!(t.to_string()) }
+        out
+    }
+
+    fn str2(&mut self) -> String {
+        let mut str = String::new();
+
+        if self.consume_exact(b'"') {
+            // Quoted string
+            loop {
+                let was_escaped = self.consume_exact(b'\\');
+                if self.consume_exact(b'"') && !was_escaped {
+                    break;
+                } else {
+                    str.push(self.consume().unwrap() as char);
+                }
+            }
+        } else {
+            // Unquoted string
+            if self.slice().starts_with(b"###PRINT(") {
+                self.advance(9);
+                self.expr();
+                self.expect(b')');
+                return str;
+            }
+
+            loop {
+                let c = self.current().unwrap();
+                if is_string_char(c) {
+                    str.push(c as char);
+                } else {
+                    break;
+                }
+                if let Some(0x81..=0x9f | 0xe0..=0xef) = self.current() {
+                    self.advance(2);
+                } else {
+                    self.advance(1);
+                }
+            }
+        }
+
+        str
     }
 }
 
@@ -491,26 +573,10 @@ enum Element {
     Expr(Expr),
     Bytecode(Box<Element>),
     Textout(String),
-    FunctionCall { modtype: u8, module: u8, opcode: u16, argc: u16, params: Vec<Expr> },
+    FunctionCall { meta: CallMeta, params: Vec<Expr> },
     Goto(usize),
     GotoIf(usize, Expr),
-}
-
-impl Element {
-    fn len(&self) -> usize {
-        match self {
-            Element::Comma => 1,
-            Element::Entrypoint(_) => 3,
-            Element::Kidoku(_) => 3,
-            Element::Line(_) => 3,
-            Element::Expr(_) => todo!(),
-            Element::Bytecode(_) => todo!(),
-            Element::Textout(_) => todo!(),
-            Element::FunctionCall { .. } => todo!(),
-            Element::Goto(_) => todo!(),
-            Element::GotoIf(_, _) => todo!(),
-        }
-    }
+    Select { params: Vec<(u16, Expr)> },
 }
 
 enum Expr {

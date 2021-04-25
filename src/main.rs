@@ -154,7 +154,7 @@ struct ConstructionData {
     null: Option<usize>,
 }
 
-fn read_script(data: &[u8], use_xor_2: bool, second_level_xor_key: Option<&[XorKey]>) {
+fn read_script(data: &[u8], use_xor_2: bool, second_level_xor_key: Option<&[XorKey]>) -> (ConstructionData, Vec<u8>) {
     // Kidoku/entrypoint table
     let kidoku_offs = read_i32(&data[0x08..]) as usize;
     let kidoku_len = read_i32(&data[0x0c..]) as usize;
@@ -189,9 +189,7 @@ fn read_script(data: &[u8], use_xor_2: bool, second_level_xor_key: Option<&[XorK
         null: None,
     };
 
-    let mut parser = Parser::new(&uncompressed);
-    // std::fs::write("script.txt", &uncompressed).unwrap();
-    read_bytecode(&mut parser, &cd.kidoku_table);
+    (cd, uncompressed)
 }
 
 
@@ -323,7 +321,7 @@ fn main() -> Result<(), MyError> {
     reader.read_to_end(&mut buff)?;
     reader.seek(SeekFrom::Start(0))?;
 
-    let mut scenarios = HashMap::new();
+    let mut scenarios = Vec::new();
     for i in 0..10000 {
         let offs = {
             let mut buf = [0u8; 4];
@@ -341,13 +339,21 @@ fn main() -> Result<(), MyError> {
             i32::from_le_bytes(buf)
         } as usize;
 
-        scenarios.insert(i, offs..offs + len);
-    }
+        let range = offs..offs + len;
+        scenarios.push((i, range.clone()));
 
-    for (_, range) in scenarios.iter().min_by_key(|x| x.0) {
-        let f = &buff[range.start..range.end];
+        if i < 827 {
+            continue;
+        }
+
+        println!("parsing scenario: {}", i);
+        let f = &buff[range.clone()];
         let header = parse_header(&f)?;
-        read_script(&f, header.use_xor2, Some(&CLANNAD_FULL_VOICE_XOR_MASK));
+        let (cd, uncompressed) = read_script(&f, header.use_xor2, Some(&CLANNAD_FULL_VOICE_XOR_MASK));
+        std::fs::write(format!("scenario{:04}.txt", i), &uncompressed).unwrap();
+
+        let mut p = Parser::new(&uncompressed, 0);
+        read_bytecode(&mut p, &cd.kidoku_table);
     }
 
     Ok(())
