@@ -3,14 +3,13 @@ use std::io::Cursor;
 
 use crate::read_i16;
 
-pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) {
+pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) -> Vec<Element> {
     let mut elements = Vec::new();
-    let entrypoint_marker = b'@';
 
     // Read bytecode
     while let Some(c) = parser.current() {
         if c == b'!' {
-            // entrypoint_marker = b'!';
+            parser.entrypoint_marker = b'!';
         }
 
         // Read element
@@ -61,11 +60,12 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) {
                             parser.advance(1);
                             s.push(parser.consume().unwrap());
                         }
+                        b'#' | b'$' | b'\n' | b'@' | 0 if !is_quoted => break,
+                        c if c == parser.entrypoint_marker && !is_quoted => break,
                         _ => {
                             parser.advance(1);
                             s.push(c);
                         }
-                        b'#' | b'$' | b'\n' | b'@' | 0 => break,
                     }
                 }
                 assert!(!s.is_empty());
@@ -83,51 +83,184 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) {
             Element::FunctionCall { .. } => todo!(),
             Element::Goto(_) => todo!(),
             Element::GotoIf(_, _) => todo!(),
-            Element::Select { params } => println!("select: {:?}", params),
+            Element::Select { cond, params } => println!("select: {:?}", params),
         }
         elements.push(element);
     }
+    elements
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::parse::{Parser, read_bytecode, read_function};
+    use crate::parse::{Parser, read_bytecode, read_function, Element, Expr};
+
+    fn repr(x: &impl std::fmt::Debug) -> String {
+        use std::fmt::Write;
+        let mut s = String::new();
+        write!(&mut s, "{:?}", x).unwrap();
+        s
+    }
+
+    fn parse_element(s: &[u8]) -> Element {
+        let mut p = Parser::new(s);
+        let result = read_bytecode(&mut p, &[]);
+        assert_eq!(result.len(), 1);
+        result
+            .into_iter()
+            .next()
+            .unwrap()
+    }
 
     #[test]
     fn assignment() {
-        let mut p = Parser::new(&[
+        let e = parse_element(&[
             0x24, 0x00, 0x5b, // 0x00 [
             0x24, 0xff, 0x01, 0x00, 0x00, 0x00, // const 1
             0x5d, // ]
             0x5c, 0x1e, // op=1e
             0x24, 0xff, 0x00, 0x00, 0x00, 0x00 // const 0
         ]);
-        let expr = p.assign();
-        dbg!(expr);
+        assert_eq!(repr(&e), "Expr(A[1] = 0)");
     }
 
     #[test]
-    fn foo() {
-        let mut p = Parser::new(&[
+    fn call() {
+        let e = parse_element(&[
             0x23, 0x00, 0x01, 0x0c, 0x00, 0x02, 0x00, 0x01,
             0x28, // (
             0x24, 0xff, 0x75, 0x23, 0x00, 0x00,
             0x24, 0xff, 0x00, 0x00, 0x00, 0x00,
             0x29, // )
         ]);
-        let e = read_bytecode(&mut p, &[]);
+        assert_eq!(repr(&e), "Bytecode(FunctionCall { meta: CallMeta { modtype: 0, module: 1, opcode: 12, argc: 2, overload: 1 }, params: [9077, 0] })");
+    }
+
+    #[test]
+    fn call2() {
+        let e = parse_element(&[
+            0x23, 0x01, 0x04, 0x72, 0x00, 0x00, 0x00, 0x01
+        ]);
+        assert_eq!(repr(&e), "Bytecode(FunctionCall { meta: CallMeta { modtype: 1, module: 4, opcode: 114, argc: 0, overload: 1 }, params: [] })");
     }
 
     #[test]
     fn foo2() {
-        let mut p = Parser::new(&[
-            0x23, 0x01, 0x04, 0x72, 0x00, 0x00, 0x00, 0x01,
+        let e = parse_element(&[
             0x24, 0x00, 0x5b,
             0x24, 0xff, 0x03, 0x00, 0x00, 0x00,
             0x5d,
             0x5c, 0x1e, 0x24, 0xc8
         ]);
-        let e = read_function(&mut p, &[]);
+        assert_eq!(repr(&e), "Expr(A[3] = register)");
+    }
+
+    #[test]
+    fn foo3() {
+        let e = parse_element(&[
+            0x23, 0x01, 0x0A, 0x00, 0x00, 0x02, 0x00, 0x00,
+            0x28, // (
+            0x24, 0x12, 0x5B, 0x24, 0xFF, 0xE9, 0x03, 0x00, 0x00, 0x5D,
+            0x2C, // ,
+            0x4E, 0x4F, 0x4E, 0x45, // NONE
+            0x29, // )
+        ]);
+        assert_eq!(repr(&e), "Bytecode(FunctionCall { meta: CallMeta { modtype: 1, module: 10, opcode: 0, argc: 2, overload: 0 }, params: [strS[1001], \"NONE\"] })");
+    }
+
+    #[test]
+    fn foo4() {
+        let e = parse_element(&[
+            0x24, 0x05, 0x5B, 0x24, 0xFF, 0x50, 0x04, 0x00, 0x00, 0x5D,
+            0x5C, 0x1E, // =
+            0x24, 0xFF, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        assert_eq!(repr(&e), "Expr(F[1104] = 0)");
+    }
+
+    #[test]
+    fn foo5() {
+        let e = parse_element(&[
+            0x23, 0x00, 0x02, 0x01, 0x00, 0x02, 0x00, 0x00,
+            0x7B, 0x0A, 0xBA, 0x04, 0x22, 0x53, 0x6B, 0x69,
+            0x70, 0x20, 0x63, 0x6C, 0x61, 0x73, 0x73, 0x22,
+            0x0A, 0xBB, 0x04, 0x22, 0x53, 0x74, 0x61, 0x79,
+            0x20, 0x61, 0x72, 0x6F, 0x75, 0x6E, 0x64, 0x22,
+            0x0A, 0xBC, 0x04, 0x7D,
+        ]);
+        assert_eq!(repr(&e), r#"Bytecode(Select { cond: None, params: [(1211, "\"Skip class\""), (1212, "\"Stay around\"")] })"#);
+    }
+
+    #[test]
+    fn foo6() {
+        let e = parse_element(&[
+            // 0x00, 0x01, 0x21, 0x20, 0x00, 0x01, 0x00, 0x00,
+            // 0x28,
+            // 0x24, 0xFF, 0x01, 0x00, 0x00, 0x00,
+            // 0x29,
+            // 0x40, 0x43, 0x02,
+            // 0x22, 0x20, 0x22,
+            // 0x23, 0x00, 0x03, 0xCD, 0x00, 0x00, 0x00, 0x00,
+            // 0x40, 0x44, 0x02,
+
+            // 0x22, 0x54, 0x68, 0x65, 0x20, 0x67, 0x72,
+            // 0x6F, 0x75, 0x6E, 0x64, 0x20, 0x62, 0x65, 0x67,
+            // 0x69, 0x6E, 0x73, 0x20, 0x74, 0x6F, 0x20, 0x72,
+            // 0x75, 0x6D, 0x62, 0x6C, 0x65, 0x20, 0x61, 0x67,
+            // 0x61, 0x69, 0x6E, 0x00, 0x22,
+
+            // 0x23, 0x00, 0x03, 0x11, 0x00, 0x00, 0x00, 0x00
+        ]);
+        assert_eq!(repr(&e), r#"Bytecode(Select { cond: None, params: [(1211, "\"Skip class\""), (1212, "\"Stay around\"")] })"#);
+    }
+
+    #[test]
+    fn maderscase() {
+        let e = parse_element(&[
+            0x23, 0x00, 0x01, 0x02, 0x00, 0x00, 0x00, 0x00,
+            0x28,                                           // (
+            0x28, 0x00,                                 // ( \0
+            //                                              //
+            0x24, 0x05, 0x5B,                       //   F[
+            0x24, 0xFF, 0xCD, 0x00, 0x00, 0x00, //     const
+            0x5D,                                   //   ]
+            0x5C, 0x28,                             //   ==
+            0x24, 0xFF, 0x01, 0x00, 0x00, 0x00,     //   const
+            0x29,                                       // )
+            0x5C, 0x3C,                                 // &&
+            0x28,                                       // (
+            0x24, 0x05, 0x5B,                       //   F[
+            0x24, 0xFF, 0xCE, 0x00, 0x00, 0x00, //     const
+            0x5D,                                   //   ]
+            0x5C, 0x28,                             //   ==
+            0x24, 0xFF, 0x00, 0x00, 0x00, 0x00,     //   const
+            0x29,                                       // )
+            0x29,                                           // )
+
+            0x5C, 0x3D,                                     // ||
+
+            0x28, 0x00,                                     // (
+            0x24, 0x05, 0x5B,                           //   $F[
+            0x24, 0xFF, 0xCD, 0x00, 0x00, 0x00,     //     const
+            0x5D,                                       //   ]
+            0x5C, 0x28,                                 //   ==
+            0x24, 0xFF, 0x00, 0x00, 0x00, 0x00,         //   const
+            0x29,                                           // )
+
+            0x5C, 0x3C,                                     // &&
+
+            0x28,                                           // (
+            0x24, 0x05, 0x5B,                           //   $F[
+            0x24, 0xFF, 0xCE, 0x00, 0x00, 0x00,     //     const
+            0x5D,                                       //   ]
+            0x5C, 0x28,                                 //   ==
+            0x24, 0xFF, 0x01, 0x00, 0x00, 0x00,         //   const
+            0x29,                                           // )
+            //
+            0x29, // )
+            0x29, // )
+            0xD3, 0xEC, 0x00, 0x00, // Goto(Id)
+        ]);
+        assert_eq!(repr(&e), "Expr(A[3] = register)");
     }
 }
 
@@ -203,7 +336,7 @@ fn read_function(parser: &mut Parser) -> Element {
 }
 
 #[derive(Debug)]
-struct CallMeta {
+pub(crate) struct CallMeta {
     modtype: u8,
     module: u8,
     opcode: u16,
@@ -212,6 +345,7 @@ struct CallMeta {
 }
 
 fn read_call_meta(parser: &mut Parser) -> CallMeta {
+    // 0 1 3 2
     let [modtype, module, opcode1, opcode2, argc1, argc2, overload] = parser.consume_n();
     let opcode = (opcode2 as u16) << 8 | (opcode1 as u16);
     let argc = (argc2 as u16) << 8 | (argc1 as u16);
@@ -226,29 +360,31 @@ fn read_call_meta(parser: &mut Parser) -> CallMeta {
 
 fn select(parser: &mut Parser) -> Element {
     let meta = read_call_meta(parser);
-    if parser.consume_exact(b'(') {
-        let expr = parser.expr_term();
-        dbg!(expr);
-    }
+    let cond = if parser.consume_exact(b'(') {
+        Some(parser.expr_term())
+    } else {
+        None
+    };
     parser.expect(b'{');
-    let x = if parser.consume_exact(b'\n') {
+    let _first_line = if parser.consume_exact(b'\n') {
         i16::from_le_bytes(parser.consume_n()) as u16
     } else {
         0
     };
-    println!("{}", x);
 
     let mut params = Vec::new();
     for _ in 0..meta.argc {
         // Skip preliminary metadata.
         while parser.consume_exact(b',') {}
 
+        let mut conds = Vec::new();
         // Read condition, if present.
         if parser.consume_exact(b'(') {
             while parser.current() != Some(b')') {
                 let cond = parser.expr();
-                panic!("{:?}", cond);
+                conds.push(cond);
             }
+            todo!();
             parser.expect(b')');
         }
 
@@ -263,21 +399,23 @@ fn select(parser: &mut Parser) -> Element {
         // The only thing allowed other than a 16 bit integer.
         parser.advance(2);
     }
-
-    Element::Select { params }
+    parser.expect(b'}');
+    Element::Select { cond: cond.map(Box::new), params }
 }
 
 pub(crate) struct Parser<'bc> {
     data: &'bc [u8],
     pos: usize,
+    entrypoint_marker: u8,
 }
 
 impl<'bc> Parser<'bc> {
-    pub(crate) fn new(data: &[u8], pos: usize) -> Parser {
-        Parser {
-            data,
-            pos,
-        }
+    pub(crate) fn new_at(data: &'bc [u8], pos: usize) -> Parser<'bc> {
+        Self { data, pos, entrypoint_marker: b'@' }
+    }
+
+    pub(crate) fn new(data: &'bc [u8]) -> Parser<'bc> {
+        Self::new_at(data, 0)
     }
 
     fn current(&self) -> Option<u8> {
@@ -455,6 +593,12 @@ impl<'bc> Parser<'bc> {
         for i in 0..n {
             print!("{:02x} ", self.slice().get(i).copied().unwrap_or(0))
         }
+
+        print!(" | ");
+        for i in 0..n {
+            print!("{} ", self.slice().get(i).copied().unwrap_or(0) as char)
+        }
+
         println!();
         self.pos += n;
     }
@@ -469,39 +613,37 @@ impl<'bc> Parser<'bc> {
     fn param(&mut self) -> Expr {
         if self.consume_exact(b',') {
             self.param()
-        } else if self.consume_exact(b'(') {
-            todo!()
         } else if self.consume_exact(b'\n') {
             self.advance(2);
             self.param()
         } else if is_string_char(self.current().unwrap()) || self.slice().starts_with(b"###PRINT(") {
             self.string()
-        } else if let Some(c) = self.consume_if(|b| b == b'a' || b == b'(') {
+        } else if self.consume_exact(b'a') {
             let mut exprs = Vec::new();
 
-            if c == b'a' {
-                let tag1 = self.consume();
-
+            let mut tag = self.consume().unwrap() as u32;
+            if self.consume_exact(b'a') {
                 // Some special cases have multiple tags.
-                let tag2 = if self.consume_exact(b'a') {
-                    self.consume()
-                } else {
-                    None
-                };
-                let tag = (tag2.unwrap_or(0) as u16) << 8 |
-                    (tag1.unwrap_or(0) as u16);
-
-                if self.current() != Some(b')') {
-                    exprs.push(self.param());
-                    return Expr::SpecialExpr { tag, exprs };
-                } else {
-                    self.advance(1);
-                }
+                let tag2 = self.consume().unwrap();
+                tag = (tag2 as u32) << 16 | (tag as u32);
             }
 
-            while self.current() != Some(b')') {
+            if self.consume_exact(b'(') {
+                while self.current() != Some(b')') {
+                    exprs.push(self.param());
+                }
+                self.expect(b')');
+            } else {
                 exprs.push(self.param());
             }
+
+            Expr::SpecialExpr { tag, exprs }
+        } else if self.consume_slice(b"(\0") {
+            let mut exprs = Vec::new();
+            while self.current() != Some(b')') {
+                exprs.push(self.expr());
+            }
+            self.expect(b')');
 
             Expr::ComplexExpr { exprs }
         } else {
@@ -520,10 +662,14 @@ impl<'bc> Parser<'bc> {
         while let Some(c) = self.current() {
             match c {
                 b'"' => {
-                    is_quoted = !is_quoted;
                     self.advance(1);
                     s.push(c);
-                    continue;
+                    if is_quoted {
+                        break;
+                    } else {
+                        is_quoted = !is_quoted;
+                        continue;
+                    }
                 }
                 b'\\' if is_quoted => {
                     self.advance(1);
@@ -540,6 +686,10 @@ impl<'bc> Parser<'bc> {
                     self.expr();
                     self.expect(b')');
                     break;
+                }
+                _ if is_quoted => {
+                    self.advance(1);
+                    s.push(c);
                 }
                 b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b' ' | b'?' | b'_' => {
                     self.advance(1);
@@ -559,7 +709,7 @@ fn is_string_char(b: u8) -> bool {
 }
 
 #[derive(Debug)]
-enum Element {
+pub(crate) enum Element {
     Comma,
     Entrypoint(usize),
     Kidoku(usize),
@@ -570,10 +720,10 @@ enum Element {
     FunctionCall { meta: CallMeta, params: Vec<Expr> },
     Goto(usize),
     GotoIf(usize, Expr),
-    Select { params: Vec<(u16, Expr)> },
+    Select { cond: Option<Box<Expr>>, params: Vec<(u16, Expr)> },
 }
 
-enum Expr {
+pub(crate) enum Expr {
     StoreRegister,
     IntConst { value: i32 },
     StringConst { value: String },
@@ -583,7 +733,7 @@ enum Expr {
     BinaryExpr(u8, Box<Self>, Box<Self>),
     SimpleAssignment,
     ComplexExpr { exprs: Vec<Expr> },
-    SpecialExpr { tag: u16, exprs: Vec<Expr> },
+    SpecialExpr { tag: u32, exprs: Vec<Expr> },
     Command { params: Vec<Expr> },
     Ox2400,
 }

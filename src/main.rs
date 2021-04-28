@@ -352,7 +352,7 @@ fn main() -> Result<(), MyError> {
         let (cd, uncompressed) = read_script(&f, header.use_xor2, Some(&CLANNAD_FULL_VOICE_XOR_MASK));
         std::fs::write(format!("scenario{:04}.txt", i), &uncompressed).unwrap();
 
-        let mut p = Parser::new(&uncompressed, 0);
+        let mut p = Parser::new_at(&uncompressed, 0);
         read_bytecode(&mut p, &cd.kidoku_table);
     }
 
