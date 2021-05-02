@@ -1,7 +1,12 @@
 use std::convert::TryInto;
 use std::io::Cursor;
 
-use crate::read_i16;
+use crate::{read_i16, read_i32};
+
+const END_OF_FILE: &[u8] =
+    b"\x82\x72\x82\x85\x82\x85\x82\x8e\x82\x64\x82\x8e\x82\x84\xff\xff\xff\xff\xff\
+      \xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\
+      \xff\xff\xff\xff\xff\xff\xff\xff";
 
 pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) -> Vec<Element> {
     let mut elements = Vec::new();
@@ -16,7 +21,7 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) -> Vec<Element
         let element = match c {
             0 | b',' => {
                 parser.advance(1);
-                Element::Comma
+                Element::Halt
             }
             b'\n' => {
                 parser.advance(1);
@@ -39,7 +44,7 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) -> Vec<Element
             }
             b'#' => {
                 parser.advance(1);
-                let element = read_function(&mut *parser);
+                let element = read_function(parser);
                 Element::Bytecode(Box::new(element))
             }
             _ => {
@@ -73,7 +78,7 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) -> Vec<Element
             }
         };
         match &element {
-            Element::Comma => println!("Comma"),
+            Element::Halt => println!("Halt"),
             Element::Entrypoint(ep) => println!("Entrypoint #{}", ep),
             Element::Kidoku(ep) => println!("Kidoku #{}", ep),
             Element::Line(ep) => println!("Line #{}", ep),
@@ -81,9 +86,10 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) -> Vec<Element
             Element::Bytecode(bc) => println!("Bytecode: {:?}", bc),
             Element::Textout(s) => println!(">> {}", s),
             Element::FunctionCall { .. } => todo!(),
-            Element::Goto(_) => todo!(),
-            Element::GotoIf(_, _) => todo!(),
-            Element::Select { cond, params } => println!("select: {:?}", params),
+            Element::GoSubWith { target, meta, params } => println!("gosubwith {} {:?} {:?}", target, meta, params),
+            Element::Goto { target: _ } => todo!(),
+            Element::GotoIf { target: _, cond: _ } => todo!(),
+            Element::Select { cond: _, params } => println!("select: {:?}", params),
         }
         elements.push(element);
     }
@@ -193,24 +199,24 @@ mod tests {
     #[test]
     fn foo6() {
         let e = parse_element(&[
-            // 0x00, 0x01, 0x21, 0x20, 0x00, 0x01, 0x00, 0x00,
-            // 0x28,
-            // 0x24, 0xFF, 0x01, 0x00, 0x00, 0x00,
-            // 0x29,
-            // 0x40, 0x43, 0x02,
-            // 0x22, 0x20, 0x22,
-            // 0x23, 0x00, 0x03, 0xCD, 0x00, 0x00, 0x00, 0x00,
-            // 0x40, 0x44, 0x02,
-
-            // 0x22, 0x54, 0x68, 0x65, 0x20, 0x67, 0x72,
-            // 0x6F, 0x75, 0x6E, 0x64, 0x20, 0x62, 0x65, 0x67,
-            // 0x69, 0x6E, 0x73, 0x20, 0x74, 0x6F, 0x20, 0x72,
-            // 0x75, 0x6D, 0x62, 0x6C, 0x65, 0x20, 0x61, 0x67,
-            // 0x61, 0x69, 0x6E, 0x00, 0x22,
-
-            // 0x23, 0x00, 0x03, 0x11, 0x00, 0x00, 0x00, 0x00
+            0x00, 0x01, 0x21, 0x20, 0x00, 0x01, 0x00, 0x00,
+            0x28,
+            0x24, 0xFF, 0x01, 0x00, 0x00, 0x00,
+            0x29,
         ]);
-        assert_eq!(repr(&e), r#"Bytecode(Select { cond: None, params: [(1211, "\"Skip class\""), (1212, "\"Stay around\"")] })"#);
+        assert_eq!(repr(&e), r#"Bytecode(FunctionCall { meta: CallMeta { modtype: 1, module: 33, opcode: 32, argc: 1, overload: 0 }, params: [1] })"#);
+    }
+
+    #[test]
+    fn foo7() {
+        let e = parse_element(&[
+            0x22, 0x54, 0x68, 0x65, 0x20, 0x67, 0x72,
+            0x6F, 0x75, 0x6E, 0x64, 0x20, 0x62, 0x65, 0x67,
+            0x69, 0x6E, 0x73, 0x20, 0x74, 0x6F, 0x20, 0x72,
+            0x75, 0x6D, 0x62, 0x6C, 0x65, 0x20, 0x61, 0x67,
+            0x61, 0x69, 0x6E, 0x00, 0x22,
+        ]);
+        assert_eq!(repr(&e), r#"Textout("\"The ground begins to rumble again\u{0}\"")"#);
     }
 
     #[test]
@@ -270,8 +276,9 @@ fn read_function(parser: &mut Parser) -> Element {
         ((parser.slice()[0] as u32) << 24) |
             ((parser.slice()[1] as u32) << 16) |
             ((parser.slice()[3] as u32) << 8) |
-            (parser.slice()[2] as u32);
+            ((parser.slice()[2] as u32) << 0);
 
+    let meta = read_call_meta(parser);
     match opcode {
         0x00010000 |
         0x00010005 |
@@ -279,9 +286,8 @@ fn read_function(parser: &mut Parser) -> Element {
         0x00050005 |
         0x00060001 |
         0x00060005 => {
-            let _chunk = parser.consume_n::<7>();
-            let id = i32::from_le_bytes(parser.consume_n()) as usize;
-            Element::Goto(id)
+            let target = i32::from_le_bytes(parser.consume_n()) as usize;
+            Element::Goto { target }
         }
         0x00010001 |
         0x00010002 |
@@ -294,12 +300,11 @@ fn read_function(parser: &mut Parser) -> Element {
         0x00060002 |
         0x00060006 |
         0x00060007 => {
-            let _chunk = parser.consume_n::<7>();
             parser.expect(b'(');
-            let p = parser.expr();
+            let cond = parser.expr();
             parser.expect(b')');
-            let id = i32::from_le_bytes(parser.consume_n()) as usize;
-            Element::GotoIf(id, p)
+            let target = i32::from_le_bytes(parser.consume_n()) as usize;
+            Element::GotoIf { target, cond }
         }
         0x00010003 |
         0x00010008 |
@@ -314,15 +319,24 @@ fn read_function(parser: &mut Parser) -> Element {
         0x00060004 |
         0x00060009 => panic!("gotocase"),
         0x00010010 |
-        0x00060010 => panic!("gotosubwith"),
+        0x00060010 => {
+            let mut params = Vec::new();
+            if parser.consume_exact(b'(') {
+                while parser.current() != Some(b')') {
+                    params.push(parser.param());
+                }
+                parser.consume();
+            }
+            let target = i32::from_le_bytes(parser.consume_n()) as usize;
+            Element::GoSubWith { target, meta, params }
+        }
         0x00020000 |
         0x00020001 |
         0x00020002 |
         0x00020003 |
-        0x00020010 => select(&mut *parser),
+        0x00020010 => select(parser, meta),
         _ => {
             // Other opcodes
-            let meta = read_call_meta(parser);
             let mut params = Vec::new();
             if parser.consume_exact(b'(') {
                 while parser.current() != Some(b')') {
@@ -337,7 +351,7 @@ fn read_function(parser: &mut Parser) -> Element {
 
 #[derive(Debug)]
 pub(crate) struct CallMeta {
-    modtype: u8,
+    r#type: u8,
     module: u8,
     opcode: u16,
     argc: u16,
@@ -345,12 +359,11 @@ pub(crate) struct CallMeta {
 }
 
 fn read_call_meta(parser: &mut Parser) -> CallMeta {
-    // 0 1 3 2
-    let [modtype, module, opcode1, opcode2, argc1, argc2, overload] = parser.consume_n();
+    let [r#type, module, opcode1, opcode2, argc1, argc2, overload] = parser.consume_n();
     let opcode = (opcode2 as u16) << 8 | (opcode1 as u16);
     let argc = (argc2 as u16) << 8 | (argc1 as u16);
     CallMeta {
-        modtype,
+        r#type,
         module,
         opcode,
         argc,
@@ -358,8 +371,7 @@ fn read_call_meta(parser: &mut Parser) -> CallMeta {
     }
 }
 
-fn select(parser: &mut Parser) -> Element {
-    let meta = read_call_meta(parser);
+fn select(parser: &mut Parser, meta: CallMeta) -> Element {
     let cond = if parser.consume_exact(b'(') {
         Some(parser.expr_term())
     } else {
@@ -595,8 +607,12 @@ impl<'bc> Parser<'bc> {
         }
 
         print!(" | ");
-        for i in 0..n {
-            print!("{} ", self.slice().get(i).copied().unwrap_or(0) as char)
+        for c in self.slice()[..n].iter().map(|c| *c as char) {
+            if c.is_ascii_control() {
+                print!("  ");
+            } else {
+                print!("'{}' ", c);
+            }
         }
 
         println!();
@@ -657,13 +673,13 @@ impl<'bc> Parser<'bc> {
     }
 
     fn str(&mut self) -> String {
-        let mut s = Vec::new();
+        let mut buffer = Vec::new();
         let mut is_quoted = false;
         while let Some(c) = self.current() {
             match c {
                 b'"' => {
                     self.advance(1);
-                    s.push(c);
+                    buffer.push(c);
                     if is_quoted {
                         break;
                     } else {
@@ -673,13 +689,13 @@ impl<'bc> Parser<'bc> {
                 }
                 b'\\' if is_quoted => {
                     self.advance(1);
-                    s.push(self.consume().unwrap());
+                    buffer.push(self.consume().unwrap());
                 }
                 0x81..=0x9f | 0xe0..=0xef => {
                     self.advance(1);
                     // CP936 crap
-                    s.push(c);
-                    s.push(self.consume().unwrap());
+                    buffer.push(c);
+                    buffer.push(self.consume().unwrap());
                 }
                 _ if self.slice().starts_with(b"###PRINT(") => {
                     self.advance(9);
@@ -689,18 +705,18 @@ impl<'bc> Parser<'bc> {
                 }
                 _ if is_quoted => {
                     self.advance(1);
-                    s.push(c);
+                    buffer.push(c);
                 }
                 b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b' ' | b'?' | b'_' => {
                     self.advance(1);
-                    s.push(c);
+                    buffer.push(c);
                 }
                 _ => break,
             }
         }
-        assert!(!s.is_empty());
+        assert!(!buffer.is_empty());
 
-        encoding_rs::SHIFT_JIS.decode(&s).0.into_owned()
+        encoding_rs::SHIFT_JIS.decode(&buffer).0.into_owned()
     }
 }
 
@@ -710,7 +726,7 @@ fn is_string_char(b: u8) -> bool {
 
 #[derive(Debug)]
 pub(crate) enum Element {
-    Comma,
+    Halt,
     Entrypoint(usize),
     Kidoku(usize),
     Line(usize),
@@ -718,8 +734,9 @@ pub(crate) enum Element {
     Bytecode(Box<Element>),
     Textout(String),
     FunctionCall { meta: CallMeta, params: Vec<Expr> },
-    Goto(usize),
-    GotoIf(usize, Expr),
+    GoSubWith { target: usize, meta: CallMeta, params: Vec<Expr> },
+    Goto { target: usize },
+    GotoIf { cond: Expr, target: usize },
     Select { cond: Option<Box<Expr>>, params: Vec<(u16, Expr)> },
 }
 
@@ -732,9 +749,9 @@ pub(crate) enum Expr {
     UnaryExpr(u8, Box<Self>),
     BinaryExpr(u8, Box<Self>, Box<Self>),
     SimpleAssignment,
-    ComplexExpr { exprs: Vec<Expr> },
-    SpecialExpr { tag: u32, exprs: Vec<Expr> },
-    Command { params: Vec<Expr> },
+    ComplexExpr { exprs: Vec<Self> },
+    SpecialExpr { tag: u32, exprs: Vec<Self> },
+    Command { params: Vec<Self> },
     Ox2400,
 }
 

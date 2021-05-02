@@ -32,6 +32,7 @@ struct Scenario {
 fn read_i32(data: &[u8]) -> i32 {
     i32::from_le_bytes(data[..4].try_into().unwrap())
 }
+
 fn read_i16(data: &[u8]) -> i16 {
     i16::from_le_bytes(data[..2].try_into().unwrap())
 }
@@ -221,31 +222,25 @@ fn detect_key(regname: &[u8]) -> Option<&[XorKey]> {
 }
 
 fn decompress(src: &[u8], dst: &mut [u8], per_game_xor_keys: Option<&[XorKey]>) {
-    let src: Vec<u8> = src.iter()
+    let mut src = src.iter()
         .copied()
         .zip(XOR_MASK.iter().copied().cycle())
         .map(|(byte, key)| byte ^ key)
-        .collect();
+        .skip(8);
 
-    let mut s = 8;
     let mut d = 0;
-    while s < src.len() {
-        let mut flags = src[s];
-        s += 1;
+    while let Some(mut flags) = src.next() {
         for _ in 0..8 {
             let copy = (flags & 1) == 1;
             if copy {
-                dst[d] = src[s];
+                dst[d] = src.next().unwrap();
                 d += 1;
-                s += 1;
             } else {
-                if s >= src.len() {
-                    break;
-                }
-
-                let count = u16::from_le_bytes(src[s..s + 2].try_into().unwrap());
-                s += 2;
-
+                let count = match (src.next(), src.next()) {
+                    (Some(b1), Some(b2)) => u16::from_le_bytes([b1, b2]),
+                    (None, None) => break,
+                    _ => unreachable!(),
+                };
                 let repeat = (count >> 4) as usize;
                 let count = ((count & 0x0f) + 2) as usize;
                 let start = d - repeat;
@@ -255,6 +250,8 @@ fn decompress(src: &[u8], dst: &mut [u8], per_game_xor_keys: Option<&[XorKey]>) 
             flags >>= 1;
         }
     }
+
+    assert_eq!(d, dst.len(), "output buffer was not filled entirely");
 
     if let Some(keys) = per_game_xor_keys {
         for key in keys {
@@ -315,11 +312,18 @@ fn parse_header(data: &[u8]) -> Result<Header, MyError> {
 }
 
 fn main() -> Result<(), MyError> {
-    let file = std::fs::File::open(r"C:\Users\Host\Downloads\SEEN.txt")?;
+    let path = std::env::args_os().nth(1).unwrap_or_else(|| {
+        r"C:\Users\Host\Downloads\SEEN.txt".into()
+    });
+
+    let file = std::fs::File::open(path)?;
     let mut reader = std::io::BufReader::new(file);
     let mut buff = vec![];
     reader.read_to_end(&mut buff)?;
     reader.seek(SeekFrom::Start(0))?;
+
+    let mut total = std::time::Duration::default();
+    let mut total_items = 0;
 
     let mut scenarios = Vec::new();
     for i in 0..10000 {
@@ -342,19 +346,35 @@ fn main() -> Result<(), MyError> {
         let range = offs..offs + len;
         scenarios.push((i, range.clone()));
 
-        if i < 827 {
-            continue;
+        // if i < 840 {
+        //     continue;
+        // }
+
+        let result = std::panic::catch_unwind(|| {
+            println!("parsing scenario: {}", i);
+            let f = &buff[range.clone()];
+            let header = parse_header(&f).unwrap();
+            let (cd, uncompressed) = read_script(&f, header.use_xor2, Some(&CLANNAD_FULL_VOICE_XOR_MASK));
+            std::fs::write(format!("scenario{:04}.txt", i), &uncompressed).unwrap();
+
+            let mut p = Parser::new_at(&uncompressed, 0);
+            let s = std::time::Instant::now();
+            let items = read_bytecode(&mut p, &cd.kidoku_table);
+            (s.elapsed(), items)
+        });
+        match result {
+            Ok((time, items)) => {
+                total += time;
+                total_items += items.len();
+            }
+            Err(e) => {
+                println!("{:?}", e);
+                panic!();
+            }
         }
-
-        println!("parsing scenario: {}", i);
-        let f = &buff[range.clone()];
-        let header = parse_header(&f)?;
-        let (cd, uncompressed) = read_script(&f, header.use_xor2, Some(&CLANNAD_FULL_VOICE_XOR_MASK));
-        std::fs::write(format!("scenario{:04}.txt", i), &uncompressed).unwrap();
-
-        let mut p = Parser::new_at(&uncompressed, 0);
-        read_bytecode(&mut p, &cd.kidoku_table);
     }
+
+    dbg!(total, total_items);
 
     Ok(())
 }
