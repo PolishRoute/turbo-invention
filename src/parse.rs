@@ -1,16 +1,8 @@
 use std::convert::TryInto;
-use std::io::Cursor;
-
-use crate::{read_i16, read_i32};
 
 const DEBUG: bool = cfg!(debug_assertions);
 
-const END_OF_FILE: &[u8] =
-    b"\x82\x72\x82\x85\x82\x85\x82\x8e\x82\x64\x82\x8e\x82\x84\xff\xff\xff\xff\xff\
-      \xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\
-      \xff\xff\xff\xff\xff\xff\xff\xff";
-
-pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) -> Vec<Element> {
+pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) -> Vec<(usize, Element)> {
     let mut elements = Vec::new();
 
     // Read bytecode
@@ -18,6 +10,8 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) -> Vec<Element
         if c == b'!' {
             parser.entrypoint_marker = b'!';
         }
+
+        let start = parser.pos;
 
         // Read element
         let element = match c {
@@ -100,14 +94,14 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) -> Vec<Element
                 Element::Select { cond: _, params } => println!("select: {:?}", params),
             }
         }
-        elements.push(element);
+        elements.push((start, element));
     }
     elements
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::parse::{Parser, read_bytecode, read_function, Element, Expr};
+    use crate::parse::{Element, Parser, read_bytecode, read_function};
 
     fn repr(x: &impl std::fmt::Debug) -> String {
         use std::fmt::Write;
@@ -124,6 +118,7 @@ mod tests {
             .into_iter()
             .next()
             .unwrap()
+            .1
     }
 
     #[test]
@@ -363,6 +358,7 @@ impl<'bc> Parser<'bc> {
         Self { data, pos, entrypoint_marker: b'@' }
     }
 
+    #[allow(unused)]
     pub(crate) fn new(data: &'bc [u8]) -> Parser<'bc> {
         Self::new_at(data, 0)
     }
