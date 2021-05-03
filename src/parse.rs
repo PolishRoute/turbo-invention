@@ -432,9 +432,6 @@ impl<'bc> Parser<'bc> {
             let location = self.expr();
             self.expect(b']');
             Expr::MemRef(ty, Box::new(location))
-        } else if self.consume_slice(b"$\x00") {
-            self.consume_n::<4>();
-            Expr::Ox2400
         } else if self.consume_slice(b"\\\x00") {
             self.expr_term()
         } else if self.consume_slice(b"\\\x01") {
@@ -693,7 +690,6 @@ pub(crate) enum Expr {
     ComplexExpr { exprs: Vec<Self> },
     SpecialExpr { tag: u32, exprs: Vec<Self> },
     Command { params: Vec<Self> },
-    Ox2400,
 }
 
 impl std::fmt::Debug for Expr {
@@ -743,7 +739,6 @@ impl std::fmt::Debug for Expr {
             Expr::ComplexExpr { .. } => todo!(),
             Expr::SpecialExpr { tag, exprs } => write!(f, "special({}:{:?})", tag, exprs)?,
             Expr::Command { .. } => todo!(),
-            Expr::Ox2400 => write!(f, "UNKNOWN")?,
         }
         Ok(())
     }
