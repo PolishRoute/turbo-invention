@@ -1,6 +1,6 @@
 use std::io::Read;
 
-use crate::archive::parse_seen;
+use crate::archive::read_archive;
 use crate::parse::Element;
 
 mod parse;
@@ -18,11 +18,8 @@ fn main() -> Result<(), MyError> {
     let mut total = std::time::Duration::default();
     let mut total_items = Vec::new();
 
-    let file = std::fs::File::open(path)?;
-    let mut reader = std::io::BufReader::new(file);
-    let mut buff = vec![];
-    reader.read_to_end(&mut buff)?;
-    let archive = parse_seen(&buff)?;
+    let buffer = std::fs::read(path)?;
+    let archive = read_archive(&buffer)?;
 
     for scenario in archive.scenarios() {
         let result = std::panic::catch_unwind(|| {
@@ -42,12 +39,14 @@ fn main() -> Result<(), MyError> {
         }
     }
 
-    dbg!(total, total_items.len());
+    println!("Parsed {} items in {:?}", total_items.len(), total);
 
     for (_pos, item) in total_items.iter() {
         match item {
             Element::Halt => {}
-            Element::Entrypoint(_) => {}
+            Element::Entrypoint(ep) => {
+                // println!("{}", ep);
+            }
             Element::Kidoku(_) => {}
             Element::Line(_) => {}
             Element::Expr(_) => {
@@ -56,7 +55,9 @@ fn main() -> Result<(), MyError> {
             Element::Textout(_) => {
                 // println!("{}", t);
             }
-            Element::FunctionCall { .. } => {}
+            Element::FunctionCall { meta, params } => {
+                // println!("{:?} {:?}", meta, params);
+            }
             Element::GoSubWith { target, .. } => {
                 assert!(total_items.iter().any(|(pos, _)| pos == target));
             }
@@ -66,7 +67,9 @@ fn main() -> Result<(), MyError> {
             Element::GotoIf { target, .. } => {
                 assert!(total_items.iter().any(|(pos, _)| pos == target));
             }
-            Element::Select { cond: _, params: _ } => {}
+            Element::Select { cond, params } => {
+                // println!("{:?} {:#?}", cond, params)
+            }
         }
     }
 

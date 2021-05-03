@@ -331,10 +331,10 @@ fn select(parser: &mut Parser, meta: CallMeta) -> Element {
         }
 
         // Read text
-        let str = parser.string();
+        let text = parser.str();
         parser.expect(b'\n');
-        let lnum = i16::from_le_bytes(parser.consume_n());
-        params.push((lnum as u16, str));
+        let line_number = i16::from_le_bytes(parser.consume_n());
+        params.push(SelectOption { line: line_number as u16, text });
     }
 
     while parser.consume_exact(b'\n') {
@@ -661,7 +661,13 @@ pub(crate) enum Element {
     GoSubWith { target: usize, meta: CallMeta, params: Vec<Expr> },
     Goto { target: usize },
     GotoIf { cond: Expr, target: usize },
-    Select { cond: Option<Box<Expr>>, params: Vec<(u16, Expr)> },
+    Select { cond: Option<Box<Expr>>, params: Vec<SelectOption> },
+}
+
+#[derive(Debug)]
+pub(crate) struct SelectOption {
+    line: u16,
+    text: String,
 }
 
 pub(crate) enum Expr {

@@ -20,7 +20,7 @@ impl<'d> Archive<'d> {
     pub(crate) fn get(&self, idx: usize) -> Option<Scenario> {
         Some(Scenario {
             range: self.scenarios[idx].1.clone(),
-            data: self.data
+            data: self.data,
         })
     }
 
@@ -48,7 +48,7 @@ pub(crate) struct Scenario<'d> {
 }
 
 impl<'d> Scenario<'d> {
-    pub(crate) fn read(&self) -> Option<Vec<(usize, Element)>>{
+    pub(crate) fn read(&self) -> Option<Vec<(usize, Element)>> {
         let data = &self.data[self.range.clone()];
         let header = parse_header(&data).unwrap();
         let (cd, uncompressed) = read_script(
@@ -61,8 +61,7 @@ impl<'d> Scenario<'d> {
     }
 }
 
-
-pub(crate) fn parse_seen(data: &[u8]) -> io::Result<Archive> {
+pub(crate) fn read_archive(data: &[u8]) -> io::Result<Archive> {
     let mut scenarios = Vec::new();
     let mut reader = io::Cursor::new(data);
     for i in 0..10000 {
@@ -82,8 +81,7 @@ pub(crate) fn parse_seen(data: &[u8]) -> io::Result<Archive> {
             i32::from_le_bytes(buf)
         } as usize;
 
-        let range = offs..offs + len;
-        scenarios.push((i, range.clone()));
+        scenarios.push((i, offs..offs + len));
     }
     Ok(Archive { scenarios, data })
 }
@@ -146,17 +144,13 @@ fn read_script(data: &[u8], use_xor_2: bool, second_level_xor_key: Option<&[XorK
         }
     }
 
-
-    let mut uncompressed = vec![0u8; dlen];
+    let mut decompressed = vec![0u8; dlen];
     let offset = read_i32(&data[0x20..]) as usize;
     let length = read_i32(&data[0x28..]) as usize;
-    decompress(&data[offset..][..length], &mut uncompressed, keys);
+    decompress(&data[offset..][..length], &mut decompressed, keys);
 
-    let cd = ConstructionData {
-        kidoku_table,
-    };
-
-    (cd, uncompressed)
+    let cd = ConstructionData { kidoku_table };
+    (cd, decompressed)
 }
 
 fn decompress(src: &[u8], dst: &mut [u8], per_game_xor_keys: Option<&[XorKey]>) {
