@@ -329,7 +329,6 @@ fn select(parser: &mut Parser, meta: CallMeta) -> Element {
                 let cond = parser.expr();
                 conds.push(cond);
             }
-            todo!();
             parser.expect(b')');
         }
 
@@ -363,6 +362,7 @@ impl<'bc> Parser<'bc> {
         Self::new_at(data, 0)
     }
 
+    #[inline]
     fn current(&self) -> Option<u8> {
         self.data.get(self.pos).copied()
     }
@@ -599,7 +599,6 @@ impl<'bc> Parser<'bc> {
 
             Expr::ComplexExpr { exprs }
         } else {
-            // todo!();
             self.expr()
         }
     }
