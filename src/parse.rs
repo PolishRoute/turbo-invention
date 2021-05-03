@@ -410,33 +410,34 @@ impl<'bc> Parser<'bc> {
     }
 
     fn assign(&mut self) -> Expr {
-        let itok = self.expr_term();
-        let _unknown = self.consume();
+        let lhs = self.expr_term();
+        self.expect(0x5c);
         let op = self.consume().unwrap();
-        let etok = self.expr();
+        let rhs = self.expr();
         if op >= 0x14 && op <= 0x24 {
-            Expr::BinaryExpr(op, Box::new(itok), Box::new(etok))
+            Expr::BinaryExpr(op, Box::new(lhs), Box::new(rhs))
         } else {
             panic!();
         }
     }
 
     fn expr_term(&mut self) -> Expr {
-        if self.consume_slice(b"$\xff") {
-            let val = self.consume_n();
-            Expr::IntConst { value: i32::from_le_bytes(val) }
-        } else if self.consume_slice(b"$\xc8") {
-            Expr::StoreRegister
-        } else if let [b'$', _, b'[', ..] = self.slice() {
-            let [_, ty, _] = self.consume_n();
-            let location = self.expr();
-            self.expect(b']');
-            Expr::MemRef(ty, Box::new(location))
-        } else if self.consume_slice(b"\\\x00") {
-            self.expr_term()
-        } else if self.consume_slice(b"\\\x01") {
+        if self.consume_exact(b'$') {
+            if self.consume_exact(0xff) {
+                Expr::IntConst { value: i32::from_le_bytes(self.consume_n()) }
+            } else if self.consume_exact(0xc8) {
+                Expr::StoreRegister
+            } else {
+                let bank = self.consume().unwrap();
+                self.expect(b'[');
+                let location = self.expr();
+                self.expect(b']');
+                Expr::MemRef(bank, Box::new(location))
+            }
+        } else if self.consume_exact(b'\\') {
+            let op = self.consume().unwrap();
             let expr = self.expr_term();
-            Expr::UnaryExpr(0x1, Box::new(expr))
+            Expr::UnaryExpr(op, Box::new(expr))
         } else if self.consume_exact(b'(') {
             let expr = self.expr_bool();
             self.expect(b')');
