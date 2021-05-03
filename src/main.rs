@@ -1,12 +1,13 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
+
 mod parse;
 
 use std::io::{Read, SeekFrom, Seek};
 use std::ops::Range;
 use std::collections::HashMap;
 use std::convert::TryInto;
-use crate::parse::{read_bytecode, Parser};
+use crate::parse::{read_bytecode, Parser, Element};
 
 type MyError = Box<dyn std::error::Error>;
 
@@ -327,7 +328,7 @@ fn main() -> Result<(), MyError> {
     reader.seek(SeekFrom::Start(0))?;
 
     let mut total = std::time::Duration::default();
-    let mut total_items = 0;
+    let mut total_items = Vec::new();
 
     let mut scenarios = Vec::new();
     for i in 0..10000 {
@@ -350,10 +351,6 @@ fn main() -> Result<(), MyError> {
         let range = offs..offs + len;
         scenarios.push((i, range.clone()));
 
-        // if i < 840 {
-        //     continue;
-        // }
-
         let result = std::panic::catch_unwind(|| {
             println!("parsing scenario: {}", i);
             let f = &buff[range.clone()];
@@ -369,7 +366,7 @@ fn main() -> Result<(), MyError> {
         match result {
             Ok((time, items)) => {
                 total += time;
-                total_items += items.len();
+                total_items.extend(items.into_iter());
             }
             Err(e) => {
                 println!("{:?}", e);
@@ -378,7 +375,26 @@ fn main() -> Result<(), MyError> {
         }
     }
 
-    dbg!(total, total_items);
+    dbg!(total, total_items.len());
+
+    for item in total_items {
+        match item {
+            Element::Halt => {}
+            Element::Entrypoint(_) => {}
+            Element::Kidoku(_) => {}
+            Element::Line(_) => {}
+            Element::Expr(_) => {}
+            Element::Bytecode(_) => {}
+            Element::Textout(t) => {
+                println!("{}", t);
+            }
+            Element::FunctionCall { .. } => {}
+            Element::GoSubWith { .. } => {}
+            Element::Goto { .. } => {}
+            Element::GotoIf { .. } => {}
+            Element::Select { .. } => {}
+        }
+    }
 
     Ok(())
 }
