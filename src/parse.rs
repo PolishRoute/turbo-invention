@@ -134,7 +134,7 @@ mod tests {
     }
 
     #[test]
-    fn call() {
+    fn call_with_args() {
         let e = parse_element(&[
             0x23, 0x00, 0x01, 0x0c, 0x00, 0x02, 0x00, 0x01,
             0x28, // (
@@ -142,19 +142,19 @@ mod tests {
             0x24, 0xff, 0x00, 0x00, 0x00, 0x00,
             0x29, // )
         ]);
-        assert_eq!(repr(&e), "Bytecode(FunctionCall { meta: CallMeta { modtype: 0, module: 1, opcode: 12, argc: 2, overload: 1 }, params: [9077, 0] })");
+        assert_eq!(repr(&e), "Bytecode(FunctionCall { meta: CallMeta { type: 0, module: 1, opcode: 12, argc: 2, overload: 1 }, params: [9077, 0] })");
     }
 
     #[test]
-    fn call2() {
+    fn call_without_args() {
         let e = parse_element(&[
             0x23, 0x01, 0x04, 0x72, 0x00, 0x00, 0x00, 0x01
         ]);
-        assert_eq!(repr(&e), "Bytecode(FunctionCall { meta: CallMeta { modtype: 1, module: 4, opcode: 114, argc: 0, overload: 1 }, params: [] })");
+        assert_eq!(repr(&e), "Bytecode(FunctionCall { meta: CallMeta { type: 1, module: 4, opcode: 114, argc: 0, overload: 1 }, params: [] })");
     }
 
     #[test]
-    fn foo2() {
+    fn assign_from_register() {
         let e = parse_element(&[
             0x24, 0x00, 0x5b,
             0x24, 0xff, 0x03, 0x00, 0x00, 0x00,
@@ -165,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn foo3() {
+    fn call_with_string_arg() {
         let e = parse_element(&[
             0x23, 0x01, 0x0A, 0x00, 0x00, 0x02, 0x00, 0x00,
             0x28, // (
@@ -174,21 +174,11 @@ mod tests {
             0x4E, 0x4F, 0x4E, 0x45, // NONE
             0x29, // )
         ]);
-        assert_eq!(repr(&e), "Bytecode(FunctionCall { meta: CallMeta { modtype: 1, module: 10, opcode: 0, argc: 2, overload: 0 }, params: [strS[1001], \"NONE\"] })");
+        assert_eq!(repr(&e), "Bytecode(FunctionCall { meta: CallMeta { type: 1, module: 10, opcode: 0, argc: 2, overload: 0 }, params: [strS[1001], \"NONE\"] })");
     }
 
     #[test]
-    fn foo4() {
-        let e = parse_element(&[
-            0x24, 0x05, 0x5B, 0x24, 0xFF, 0x50, 0x04, 0x00, 0x00, 0x5D,
-            0x5C, 0x1E, // =
-            0x24, 0xFF, 0x00, 0x00, 0x00, 0x00,
-        ]);
-        assert_eq!(repr(&e), "Expr(F[1104] = 0)");
-    }
-
-    #[test]
-    fn foo5() {
+    fn select() {
         let e = parse_element(&[
             0x23, 0x00, 0x02, 0x01, 0x00, 0x02, 0x00, 0x00,
             0x7B, 0x0A, 0xBA, 0x04, 0x22, 0x53, 0x6B, 0x69,
@@ -201,18 +191,7 @@ mod tests {
     }
 
     #[test]
-    fn foo6() {
-        let e = parse_element(&[
-            0x00, 0x01, 0x21, 0x20, 0x00, 0x01, 0x00, 0x00,
-            0x28,
-            0x24, 0xFF, 0x01, 0x00, 0x00, 0x00,
-            0x29,
-        ]);
-        assert_eq!(repr(&e), r#"Bytecode(FunctionCall { meta: CallMeta { modtype: 1, module: 33, opcode: 32, argc: 1, overload: 0 }, params: [1] })"#);
-    }
-
-    #[test]
-    fn foo7() {
+    fn textout() {
         let e = parse_element(&[
             0x22, 0x54, 0x68, 0x65, 0x20, 0x67, 0x72,
             0x6F, 0x75, 0x6E, 0x64, 0x20, 0x62, 0x65, 0x67,
@@ -221,56 +200,6 @@ mod tests {
             0x61, 0x69, 0x6E, 0x00, 0x22,
         ]);
         assert_eq!(repr(&e), r#"Textout("\"The ground begins to rumble again\u{0}\"")"#);
-    }
-
-    #[test]
-    fn maderscase() {
-        let e = parse_element(&[
-            0x23, 0x00, 0x01, 0x02, 0x00, 0x00, 0x00, 0x00,
-            0x28,                                           // (
-            0x28, 0x00,                                 // ( \0
-            //                                              //
-            0x24, 0x05, 0x5B,                       //   F[
-            0x24, 0xFF, 0xCD, 0x00, 0x00, 0x00, //     const
-            0x5D,                                   //   ]
-            0x5C, 0x28,                             //   ==
-            0x24, 0xFF, 0x01, 0x00, 0x00, 0x00,     //   const
-            0x29,                                       // )
-            0x5C, 0x3C,                                 // &&
-            0x28,                                       // (
-            0x24, 0x05, 0x5B,                       //   F[
-            0x24, 0xFF, 0xCE, 0x00, 0x00, 0x00, //     const
-            0x5D,                                   //   ]
-            0x5C, 0x28,                             //   ==
-            0x24, 0xFF, 0x00, 0x00, 0x00, 0x00,     //   const
-            0x29,                                       // )
-            0x29,                                           // )
-
-            0x5C, 0x3D,                                     // ||
-
-            0x28, 0x00,                                     // (
-            0x24, 0x05, 0x5B,                           //   $F[
-            0x24, 0xFF, 0xCD, 0x00, 0x00, 0x00,     //     const
-            0x5D,                                       //   ]
-            0x5C, 0x28,                                 //   ==
-            0x24, 0xFF, 0x00, 0x00, 0x00, 0x00,         //   const
-            0x29,                                           // )
-
-            0x5C, 0x3C,                                     // &&
-
-            0x28,                                           // (
-            0x24, 0x05, 0x5B,                           //   $F[
-            0x24, 0xFF, 0xCE, 0x00, 0x00, 0x00,     //     const
-            0x5D,                                       //   ]
-            0x5C, 0x28,                                 //   ==
-            0x24, 0xFF, 0x01, 0x00, 0x00, 0x00,         //   const
-            0x29,                                           // )
-            //
-            0x29, // )
-            0x29, // )
-            0xD3, 0xEC, 0x00, 0x00, // Goto(Id)
-        ]);
-        assert_eq!(repr(&e), "Expr(A[3] = register)");
     }
 }
 
