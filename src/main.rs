@@ -44,7 +44,7 @@ fn main() -> Result<(), MyError> {
 
     dbg!(total, total_items.len());
 
-    for (pos, item) in total_items.iter() {
+    for (_pos, item) in total_items.iter() {
         match item {
             Element::Halt => {}
             Element::Entrypoint(_) => {}
@@ -52,9 +52,6 @@ fn main() -> Result<(), MyError> {
             Element::Line(_) => {}
             Element::Expr(_) => {
                 // println!("{:?}", e);
-            }
-            Element::Bytecode(b) => {
-                println!("{:?} @ {}", b, pos);
             }
             Element::Textout(_) => {
                 // println!("{}", t);
@@ -69,7 +66,7 @@ fn main() -> Result<(), MyError> {
             Element::GotoIf { target, .. } => {
                 assert!(total_items.iter().any(|(pos, _)| pos == target));
             }
-            Element::Select { .. } => {}
+            Element::Select { cond: _, params: _ } => {}
         }
     }
 

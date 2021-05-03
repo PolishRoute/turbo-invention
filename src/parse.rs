@@ -40,8 +40,7 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) -> Vec<(usize,
             }
             b'#' => {
                 parser.advance(1);
-                let element = read_function(parser);
-                Element::Bytecode(Box::new(element))
+                read_function(parser)
             }
             _ => {
                 let mut s = Vec::new();
@@ -85,12 +84,11 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) -> Vec<(usize,
                 Element::Kidoku(ep) => println!("Kidoku #{}", ep),
                 Element::Line(ep) => println!("Line #{}", ep),
                 Element::Expr(epr) => println!("{:?}", epr),
-                Element::Bytecode(bc) => println!("Bytecode: {:?}", bc),
                 Element::Textout(s) => println!(">> {}", s),
-                Element::FunctionCall { .. } => todo!(),
-                Element::GoSubWith { target, meta, params } => println!("gosubwith {} {:?} {:?}", target, meta, params),
-                Element::Goto { target: _ } => todo!(),
-                Element::GotoIf { target: _, cond: _ } => todo!(),
+                Element::FunctionCall { params: _, meta: _ } => println!("{:?}", element),
+                Element::GoSubWith { target: _, meta: _, params: _ } => println!("{:?}", element),
+                Element::Goto { target: _ } => println!("{:?}", element),
+                Element::GotoIf { target: _, cond: _ } => println!("{:?}", element),
                 Element::Select { cond: _, params } => println!("select: {:?}", params),
             }
         }
@@ -142,7 +140,7 @@ mod tests {
             0x24, 0xff, 0x00, 0x00, 0x00, 0x00,
             0x29, // )
         ]);
-        assert_eq!(repr(&e), "Bytecode(FunctionCall { meta: CallMeta { type: 0, module: 1, opcode: 12, argc: 2, overload: 1 }, params: [9077, 0] })");
+        assert_eq!(repr(&e), "FunctionCall { meta: CallMeta { type: 0, module: 1, opcode: 12, argc: 2, overload: 1 }, params: [9077, 0] }");
     }
 
     #[test]
@@ -150,7 +148,7 @@ mod tests {
         let e = parse_element(&[
             0x23, 0x01, 0x04, 0x72, 0x00, 0x00, 0x00, 0x01
         ]);
-        assert_eq!(repr(&e), "Bytecode(FunctionCall { meta: CallMeta { type: 1, module: 4, opcode: 114, argc: 0, overload: 1 }, params: [] })");
+        assert_eq!(repr(&e), "FunctionCall { meta: CallMeta { type: 1, module: 4, opcode: 114, argc: 0, overload: 1 }, params: [] }");
     }
 
     #[test]
@@ -174,7 +172,7 @@ mod tests {
             0x4E, 0x4F, 0x4E, 0x45, // NONE
             0x29, // )
         ]);
-        assert_eq!(repr(&e), "Bytecode(FunctionCall { meta: CallMeta { type: 1, module: 10, opcode: 0, argc: 2, overload: 0 }, params: [strS[1001], \"NONE\"] })");
+        assert_eq!(repr(&e), "FunctionCall { meta: CallMeta { type: 1, module: 10, opcode: 0, argc: 2, overload: 0 }, params: [strS[1001], \"NONE\"] }");
     }
 
     #[test]
@@ -187,7 +185,7 @@ mod tests {
             0x20, 0x61, 0x72, 0x6F, 0x75, 0x6E, 0x64, 0x22,
             0x0A, 0xBC, 0x04, 0x7D,
         ]);
-        assert_eq!(repr(&e), r#"Bytecode(Select { cond: None, params: [(1211, "\"Skip class\""), (1212, "\"Stay around\"")] })"#);
+        assert_eq!(repr(&e), r#"Select { cond: None, params: [(1211, "\"Skip class\""), (1212, "\"Stay around\"")] }"#);
     }
 
     #[test]
@@ -411,7 +409,7 @@ impl<'bc> Parser<'bc> {
         let op = self.consume().unwrap();
         let rhs = self.expr();
         if op >= 0x14 && op <= 0x24 {
-            Expr::BinaryExpr(op, Box::new(lhs), Box::new(rhs))
+            Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }
         } else {
             panic!();
         }
@@ -428,12 +426,12 @@ impl<'bc> Parser<'bc> {
                 self.expect(b'[');
                 let location = self.expr();
                 self.expect(b']');
-                Expr::MemRef(bank, Box::new(location))
+                Expr::MemRef { bank, location: Box::new(location) }
             }
         } else if self.consume_exact(b'\\') {
             let op = self.consume().unwrap();
             let expr = self.expr_term();
-            Expr::UnaryExpr(op, Box::new(expr))
+            Expr::Unary { op, expr: Box::new(expr) }
         } else if self.consume_exact(b'(') {
             let expr = self.expr_bool();
             self.expect(b')');
@@ -454,7 +452,7 @@ impl<'bc> Parser<'bc> {
         if self.consume_slice(b"\\=") {
             let inner = self.expr_cond();
             let rhs = self.expr_bool_loop_and(inner);
-            self.expr_bool_loop_or(Expr::BinaryExpr(0x3d, Box::new(tok), Box::new(rhs)))
+            self.expr_bool_loop_or(Expr::Binary { op: 0x3d, lhs: Box::new(tok), rhs: Box::new(rhs) })
         } else {
             tok
         }
@@ -463,7 +461,7 @@ impl<'bc> Parser<'bc> {
     fn expr_bool_loop_and(&mut self, tok: Expr) -> Expr {
         if self.consume_slice(b"\\<") {
             let rhs = self.expr_cond();
-            self.expr_bool_loop_and(Expr::BinaryExpr(0x3c, Box::new(tok), Box::new(rhs)))
+            self.expr_bool_loop_and(Expr::Binary { op: 0x3c, lhs: Box::new(tok), rhs: Box::new(rhs) })
         } else {
             tok
         }
@@ -483,7 +481,7 @@ impl<'bc> Parser<'bc> {
             let op = *op;
             self.advance(2);
             let rhs = self.expr_arithm();
-            let new_piece = Expr::BinaryExpr(op, Box::new(tok), Box::new(rhs));
+            let new_piece = Expr::Binary { op, lhs: Box::new(tok), rhs: Box::new(rhs) };
             self.expr_cond_loop(new_piece)
         } else {
             tok
@@ -502,7 +500,7 @@ impl<'bc> Parser<'bc> {
             self.advance(2);
             let other = self.expr_term();
             let rhs = self.expr_arithm_loop_hi_prec(other);
-            let new_piece = Expr::BinaryExpr(op, Box::new(tok), Box::new(rhs));
+            let new_piece = Expr::Binary { op, lhs: Box::new(tok), rhs: Box::new(rhs) };
             self.expr_arithm_loop(new_piece)
         } else {
             tok
@@ -513,7 +511,7 @@ impl<'bc> Parser<'bc> {
         if let [b'\\', op @ 0x02..=0x09, ..] = self.slice() {
             let op = *op;
             self.advance(2);
-            let new_piece = Expr::BinaryExpr(op, Box::new(tok), Box::new(self.expr_term()));
+            let new_piece = Expr::Binary { op, lhs: Box::new(tok), rhs: Box::new(self.expr_term()) };
             self.expr_arithm_loop_hi_prec(new_piece)
         } else {
             tok
@@ -588,7 +586,7 @@ impl<'bc> Parser<'bc> {
                 exprs.push(self.param());
             }
 
-            Expr::SpecialExpr { tag, exprs }
+            Expr::Special { tag, exprs }
         } else {
             self.expr()
         }
@@ -658,7 +656,6 @@ pub(crate) enum Element {
     Kidoku(usize),
     Line(usize),
     Expr(Expr),
-    Bytecode(Box<Element>),
     Textout(String),
     FunctionCall { meta: CallMeta, params: Vec<Expr> },
     GoSubWith { target: usize, meta: CallMeta, params: Vec<Expr> },
@@ -671,10 +668,10 @@ pub(crate) enum Expr {
     StoreRegister,
     IntConst { value: i32 },
     StringConst { value: String },
-    MemRef(u8, Box<Self>),
-    UnaryExpr(u8, Box<Self>),
-    BinaryExpr(u8, Box<Self>, Box<Self>),
-    SpecialExpr { tag: u32, exprs: Vec<Self> },
+    MemRef { bank: u8, location: Box<Self> },
+    Unary { op: u8, expr: Box<Self> },
+    Binary { op: u8, lhs: Box<Self>, rhs: Box<Self> },
+    Special { tag: u32, exprs: Vec<Self> },
 }
 
 impl std::fmt::Debug for Expr {
@@ -683,7 +680,7 @@ impl std::fmt::Debug for Expr {
             Expr::StoreRegister => write!(f, "register")?,
             Expr::IntConst { value } => write!(f, "{}", value)?,
             Expr::StringConst { value } => write!(f, "{:?}", value)?,
-            Expr::MemRef(place, index) => write!(f, "{}[{:?}]", match *place {
+            Expr::MemRef { bank, location } => write!(f, "{}[{:?}]", match bank {
                 int @ 0..=6 => ((b'A' + int) as char).to_string(),
                 intzl @ 7..=8 => ((b'A' + intzl) as char).to_string(),
                 0x0a => "strK".to_string(),
@@ -692,12 +689,12 @@ impl std::fmt::Debug for Expr {
                 25 => "intZ".to_string(),
                 11 => "intL".to_string(),
                 other => todo!("{}", other),
-            }, index)?,
-            Expr::UnaryExpr(op, expr) => write!(f, "{}{:?}", match op {
+            }, location)?,
+            Expr::Unary { op, expr } => write!(f, "{}{:?}", match op {
                 1 => "-",
                 _ => todo!(),
             }, expr)?,
-            Expr::BinaryExpr(op, lhs, rhs) => write!(f, "{:?} {} {:?}", lhs, match *op {
+            Expr::Binary { op, lhs, rhs } => write!(f, "{:?} {} {:?}", lhs, match *op {
                 0 | 20 => "+",
                 1 | 21 => "-",
                 2 | 22 => "*",
@@ -719,7 +716,7 @@ impl std::fmt::Debug for Expr {
                 61 => "||",
                 _ => unimplemented!(),
             }, rhs)?,
-            Expr::SpecialExpr { tag, exprs } => write!(f, "special({}:{:?})", tag, exprs)?,
+            Expr::Special { tag, exprs } => write!(f, "special({}:{:?})", tag, exprs)?,
         }
         Ok(())
     }
