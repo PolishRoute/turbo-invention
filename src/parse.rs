@@ -635,9 +635,10 @@ impl<'bc> Parser<'bc> {
                 }
                 _ if self.slice().starts_with(b"###PRINT(") => {
                     self.advance(9);
-                    self.expr();
+                    let _expr = self.expr();
+                    // FIXME: do something with this expr
                     self.expect(b')');
-                    break;
+                    return String::new();
                 }
                 _ if is_quoted => {
                     self.advance(1);
