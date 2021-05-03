@@ -241,10 +241,14 @@ fn decompress(src: &[u8], dst: &mut [u8], per_game_xor_keys: Option<&[XorKey]>) 
                     (None, None) => break,
                     _ => unreachable!(),
                 };
-                let repeat = (count >> 4) as usize;
+                let offset = (count >> 4) as usize;
                 let count = ((count & 0x0f) + 2) as usize;
-                let start = d - repeat;
-                dst.copy_within(start..start + count, d);
+                let start = d - offset;
+                // FIXME: for some reason `copy_within` does not work here:
+                // needs some investigation
+                for i in 0..count {
+                    dst[d + i] = dst[start + i];
+                }
                 d += count;
             }
             flags >>= 1;
