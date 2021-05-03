@@ -592,14 +592,6 @@ impl<'bc> Parser<'bc> {
             }
 
             Expr::SpecialExpr { tag, exprs }
-        } else if self.consume_slice(b"(\0") {
-            let mut exprs = Vec::new();
-            while self.current() != Some(b')') {
-                exprs.push(self.expr());
-            }
-            self.expect(b')');
-
-            Expr::ComplexExpr { exprs }
         } else {
             self.expr()
         }
@@ -683,13 +675,9 @@ pub(crate) enum Expr {
     IntConst { value: i32 },
     StringConst { value: String },
     MemRef(u8, Box<Self>),
-    SimpleMemRef,
     UnaryExpr(u8, Box<Self>),
     BinaryExpr(u8, Box<Self>, Box<Self>),
-    SimpleAssignment,
-    ComplexExpr { exprs: Vec<Self> },
     SpecialExpr { tag: u32, exprs: Vec<Self> },
-    Command { params: Vec<Self> },
 }
 
 impl std::fmt::Debug for Expr {
@@ -708,7 +696,6 @@ impl std::fmt::Debug for Expr {
                 11 => "intL".to_string(),
                 other => todo!("{}", other),
             }, index)?,
-            Expr::SimpleMemRef => todo!(),
             Expr::UnaryExpr(op, expr) => write!(f, "{}{:?}", match op {
                 1 => "-",
                 _ => todo!(),
@@ -735,10 +722,7 @@ impl std::fmt::Debug for Expr {
                 61 => "||",
                 _ => unimplemented!(),
             }, rhs)?,
-            Expr::SimpleAssignment => todo!(),
-            Expr::ComplexExpr { .. } => todo!(),
             Expr::SpecialExpr { tag, exprs } => write!(f, "special({}:{:?})", tag, exprs)?,
-            Expr::Command { .. } => todo!(),
         }
         Ok(())
     }
