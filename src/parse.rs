@@ -70,6 +70,11 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) -> Vec<Element
                         b'#' | b'$' | b'\n' | b'@' | 0 if !is_quoted => break,
                         c if c == parser.entrypoint_marker && !is_quoted => break,
                         _ => {
+                            // CP932 encoding bytes
+                            if let 0x81..=0x9f | 0xe0..=0xef = c {
+                                parser.advance(1);
+                                s.push(c);
+                            }
                             parser.advance(1);
                             s.push(c);
                         }
