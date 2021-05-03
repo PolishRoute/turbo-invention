@@ -3,6 +3,8 @@ use std::io::Cursor;
 
 use crate::{read_i16, read_i32};
 
+const DEBUG: bool = cfg!(debug_assertions);
+
 const END_OF_FILE: &[u8] =
     b"\x82\x72\x82\x85\x82\x85\x82\x8e\x82\x64\x82\x8e\x82\x84\xff\xff\xff\xff\xff\
       \xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\
@@ -77,19 +79,21 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) -> Vec<Element
                 Element::Textout(encoding_rs::SHIFT_JIS.decode(&s).0.into_owned())
             }
         };
-        match &element {
-            Element::Halt => println!("Halt"),
-            Element::Entrypoint(ep) => println!("Entrypoint #{}", ep),
-            Element::Kidoku(ep) => println!("Kidoku #{}", ep),
-            Element::Line(ep) => println!("Line #{}", ep),
-            Element::Expr(epr) => println!("{:?}", epr),
-            Element::Bytecode(bc) => println!("Bytecode: {:?}", bc),
-            Element::Textout(s) => println!(">> {}", s),
-            Element::FunctionCall { .. } => todo!(),
-            Element::GoSubWith { target, meta, params } => println!("gosubwith {} {:?} {:?}", target, meta, params),
-            Element::Goto { target: _ } => todo!(),
-            Element::GotoIf { target: _, cond: _ } => todo!(),
-            Element::Select { cond: _, params } => println!("select: {:?}", params),
+        if DEBUG {
+            match &element {
+                Element::Halt => println!("Halt"),
+                Element::Entrypoint(ep) => println!("Entrypoint #{}", ep),
+                Element::Kidoku(ep) => println!("Kidoku #{}", ep),
+                Element::Line(ep) => println!("Line #{}", ep),
+                Element::Expr(epr) => println!("{:?}", epr),
+                Element::Bytecode(bc) => println!("Bytecode: {:?}", bc),
+                Element::Textout(s) => println!(">> {}", s),
+                Element::FunctionCall { .. } => todo!(),
+                Element::GoSubWith { target, meta, params } => println!("gosubwith {} {:?} {:?}", target, meta, params),
+                Element::Goto { target: _ } => todo!(),
+                Element::GotoIf { target: _, cond: _ } => todo!(),
+                Element::Select { cond: _, params } => println!("select: {:?}", params),
+            }
         }
         elements.push(element);
     }
@@ -601,21 +605,24 @@ impl<'bc> Parser<'bc> {
 
     #[track_caller]
     fn advance(&mut self, n: usize) {
-        print!("{} {:04}: ", std::panic::Location::caller(), self.pos);
-        for i in 0..n {
-            print!("{:02x} ", self.slice().get(i).copied().unwrap_or(0))
-        }
-
-        print!(" | ");
-        for c in self.slice()[..n].iter().map(|c| *c as char) {
-            if c.is_ascii_control() {
-                print!("  ");
-            } else {
-                print!("'{}' ", c);
+        if DEBUG {
+            print!("{} {:04}: ", std::panic::Location::caller(), self.pos);
+            for i in 0..n {
+                print!("{:02x} ", self.slice().get(i).copied().unwrap_or(0))
             }
+
+            print!(" | ");
+            for c in self.slice()[..n].iter().map(|c| *c as char) {
+                if c.is_ascii_control() {
+                    print!("  ");
+                } else {
+                    print!("'{}' ", c);
+                }
+            }
+
+            println!();
         }
 
-        println!();
         self.pos += n;
     }
 
