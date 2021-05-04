@@ -89,7 +89,7 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) -> Vec<(usize,
                 Element::GoSubWith { target: _, meta: _, params: _ } => println!("{:?}", element),
                 Element::Goto { target: _ } => println!("{:?}", element),
                 Element::GotoIf { target: _, cond: _ } => println!("{:?}", element),
-                Element::Select { cond: _, params } => println!("select: {:?}", params),
+                Element::Select { cond: _, params, first_line: _ } => println!("select: {:?}", params),
             }
         }
         elements.push((start, element));
@@ -99,7 +99,7 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) -> Vec<(usize,
 
 #[cfg(test)]
 mod tests {
-    use crate::parse::{Element, Parser, read_bytecode, read_function};
+    use crate::parse::{Element, Parser, read_bytecode};
 
     fn repr(x: &impl std::fmt::Debug) -> String {
         use std::fmt::Write;
@@ -185,7 +185,7 @@ mod tests {
             0x20, 0x61, 0x72, 0x6F, 0x75, 0x6E, 0x64, 0x22,
             0x0A, 0xBC, 0x04, 0x7D,
         ]);
-        assert_eq!(repr(&e), r#"Select { cond: None, params: [(1211, "\"Skip class\""), (1212, "\"Stay around\"")] }"#);
+        assert_eq!(repr(&e), r#"Select { cond: None, params: [SelectOption { line: 1211, text: "\"Skip class\"" }, SelectOption { line: 1212, text: "\"Stay around\"" }], first_line: 1210 }"#);
     }
 
     #[test]
@@ -309,7 +309,7 @@ fn select(parser: &mut Parser, meta: CallMeta) -> Element {
         None
     };
     parser.expect(b'{');
-    let _first_line = if parser.consume_exact(b'\n') {
+    let first_line = if parser.consume_exact(b'\n') {
         i16::from_le_bytes(parser.consume_n()) as u16
     } else {
         0
@@ -330,11 +330,22 @@ fn select(parser: &mut Parser, meta: CallMeta) -> Element {
             parser.expect(b')');
         }
 
-        // Read text
-        let text = parser.str();
+        let text = if parser.consume_slice(b"###PRINT(") {
+            let expr = parser.expr();
+            parser.expect(b')');
+            expr
+        } else {
+            // Read text
+            let text = parser.string();
+            Expr::StringConst { value: text }
+        };
+
         parser.expect(b'\n');
         let line_number = i16::from_le_bytes(parser.consume_n());
-        params.push(SelectOption { line: line_number as u16, text });
+        params.push(SelectOption {
+            line: line_number as u16,
+            text,
+        });
     }
 
     while parser.consume_exact(b'\n') {
@@ -342,7 +353,7 @@ fn select(parser: &mut Parser, meta: CallMeta) -> Element {
         parser.advance(2);
     }
     parser.expect(b'}');
-    Element::Select { cond: cond.map(Box::new), params }
+    Element::Select { cond: cond.map(Box::new), params, first_line }
 }
 
 pub(crate) struct Parser<'bc> {
@@ -477,8 +488,7 @@ impl<'bc> Parser<'bc> {
     }
 
     fn expr_cond_loop(&mut self, tok: Expr) -> Expr {
-        if let [b'\\', op @ 0x28..=0x2d, ..] = self.slice() {
-            let op = *op;
+        if let &[b'\\', op @ 0x28..=0x2d, ..] = self.slice() {
             self.advance(2);
             let rhs = self.expr_arithm();
             let new_piece = Expr::Binary { op, lhs: Box::new(tok), rhs: Box::new(rhs) };
@@ -495,8 +505,7 @@ impl<'bc> Parser<'bc> {
     }
 
     fn expr_arithm_loop(&mut self, tok: Expr) -> Expr {
-        if let [b'\\', op @ (0x00 | 0x01), ..] = self.slice() {
-            let op = *op;
+        if let &[b'\\', op @ (0x00 | 0x01), ..] = self.slice() {
             self.advance(2);
             let other = self.expr_term();
             let rhs = self.expr_arithm_loop_hi_prec(other);
@@ -508,8 +517,7 @@ impl<'bc> Parser<'bc> {
     }
 
     fn expr_arithm_loop_hi_prec(&mut self, tok: Expr) -> Expr {
-        if let [b'\\', op @ 0x02..=0x09, ..] = self.slice() {
-            let op = *op;
+        if let &[b'\\', op @ 0x02..=0x09, ..] = self.slice() {
             self.advance(2);
             let new_piece = Expr::Binary { op, lhs: Box::new(tok), rhs: Box::new(self.expr_term()) };
             self.expr_arithm_loop_hi_prec(new_piece)
@@ -562,11 +570,14 @@ impl<'bc> Parser<'bc> {
     fn param(&mut self) -> Expr {
         if self.consume_exact(b',') {
             self.param()
-        } else if self.consume_exact(b'\n') {
-            self.advance(2);
-            self.param()
-        } else if is_string_char(self.current().unwrap()) || self.slice().starts_with(b"###PRINT(") {
-            self.string()
+        } else if self.consume_slice(b"###PRINT(") {
+            let expr = self.expr();
+            self.expect(b')');
+            expr
+        } else if is_string_char(self.current().unwrap()) {
+            // Read text
+            let text = self.string();
+            Expr::StringConst { value: text }
         } else if self.consume_exact(b'a') {
             let mut exprs = Vec::new();
 
@@ -592,11 +603,7 @@ impl<'bc> Parser<'bc> {
         }
     }
 
-    fn string(&mut self) -> Expr {
-        Expr::StringConst { value: self.str() }
-    }
-
-    fn str(&mut self) -> String {
+    fn string(&mut self) -> String {
         let mut buffer = Vec::new();
         let mut is_quoted = false;
         while let Some(c) = self.current() {
@@ -620,13 +627,6 @@ impl<'bc> Parser<'bc> {
                     // CP936 crap
                     buffer.push(c);
                     buffer.push(self.consume().unwrap());
-                }
-                _ if self.slice().starts_with(b"###PRINT(") => {
-                    self.advance(9);
-                    let _expr = self.expr();
-                    // FIXME: do something with this expr
-                    self.expect(b')');
-                    return String::new();
                 }
                 _ if is_quoted => {
                     self.advance(1);
@@ -661,13 +661,13 @@ pub(crate) enum Element {
     GoSubWith { target: usize, meta: CallMeta, params: Vec<Expr> },
     Goto { target: usize },
     GotoIf { cond: Expr, target: usize },
-    Select { cond: Option<Box<Expr>>, params: Vec<SelectOption> },
+    Select { cond: Option<Box<Expr>>, params: Vec<SelectOption>, first_line: u16 },
 }
 
 #[derive(Debug)]
 pub(crate) struct SelectOption {
     line: u16,
-    text: String,
+    pub(crate) text: Expr,
 }
 
 pub(crate) enum Expr {
@@ -722,7 +722,19 @@ impl std::fmt::Debug for Expr {
                 61 => "||",
                 _ => unimplemented!(),
             }, rhs)?,
-            Expr::Special { tag, exprs } => write!(f, "special({}:{:?})", tag, exprs)?,
+            Expr::Special { tag, exprs } => {
+                write!(f, "{}:{{", tag)?;
+                let mut first = true;
+                for e in exprs {
+                    if !first {
+                        write!(f, ",")?;
+                    } else {
+                        first = false;
+                    }
+                    write!(f, "{:?}", e)?;
+                }
+                write!(f, "}}")?;
+            }
         }
         Ok(())
     }
