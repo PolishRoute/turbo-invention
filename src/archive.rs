@@ -18,8 +18,10 @@ impl<'d> Archive<'d> {
     }
 
     pub(crate) fn get(&self, idx: usize) -> Option<Scenario> {
+        let (id, range) = self.scenarios[idx].clone();
         Some(Scenario {
-            range: self.scenarios[idx].1.clone(),
+            id,
+            range,
             data: self.data,
         })
     }
@@ -43,6 +45,7 @@ struct Header {
 }
 
 pub(crate) struct Scenario<'d> {
+    pub(crate) id: u32,
     range: Range<usize>,
     data: &'d [u8],
 }
@@ -56,6 +59,7 @@ impl<'d> Scenario<'d> {
             header.use_xor2,
             detect_key(b"KEY\\CLANNAD_FV"),
         );
+        std::fs::write(format!("scenario{:04}.txt", self.id), &uncompressed).unwrap();
         let mut parser = Parser::new_at(&uncompressed, 0);
         Some(read_bytecode(&mut parser, &cd.kidoku_table))
     }

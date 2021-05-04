@@ -1,5 +1,3 @@
-use std::io::Read;
-
 use crate::archive::read_archive;
 use crate::parse::Element;
 
@@ -30,7 +28,7 @@ fn main() -> Result<(), MyError> {
         match result {
             Ok((time, items)) => {
                 total += time;
-                total_items.extend(items.into_iter());
+                total_items.extend(items.into_iter().map(|(o, e)| (scenario.id, o, e)));
             }
             Err(e) => {
                 println!("{:?}", e);
@@ -41,7 +39,7 @@ fn main() -> Result<(), MyError> {
 
     println!("Parsed {} items in {:?}", total_items.len(), total);
 
-    for (_pos, item) in total_items.iter() {
+    for (scenario, offset, item) in total_items.iter() {
         match item {
             Element::Halt => {}
             Element::Entrypoint(ep) => {
@@ -49,26 +47,29 @@ fn main() -> Result<(), MyError> {
             }
             Element::Kidoku(_) => {}
             Element::Line(_) => {}
-            Element::Expr(_) => {
+            Element::Expr(e) => {
                 // println!("{:?}", e);
             }
             Element::Textout(_) => {
                 // println!("{}", t);
             }
             Element::FunctionCall { meta, params } => {
+                // for e in params {
+                //     println!("{:?}", e);
+                // }
                 // println!("{:?} {:?}", meta, params);
             }
             Element::GoSubWith { target, .. } => {
-                assert!(total_items.iter().any(|(pos, _)| pos == target));
+                assert!(total_items.iter().any(|it| it.1 == *target));
             }
             Element::Goto { target, .. } => {
-                assert!(total_items.iter().any(|(pos, _)| pos == target));
+                assert!(total_items.iter().any(|it| it.1 == *target));
             }
             Element::GotoIf { target, .. } => {
-                assert!(total_items.iter().any(|(pos, _)| pos == target));
+                assert!(total_items.iter().any(|it| it.1 == *target));
             }
-            Element::Select { cond, params } => {
-                // println!("{:?} {:#?}", cond, params)
+            Element::Select { cond, params, first_line } => {
+                println!("{}:{}  {:?} {:#?}", scenario, offset, cond, params)
             }
         }
     }
