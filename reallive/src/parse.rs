@@ -437,6 +437,21 @@ impl<'bc> Parser<'bc> {
         let op = self.consume().unwrap();
         let rhs = self.expr();
         if op >= 0x14 && op <= 0x24 {
+            let op = match op {
+                0x14 => Operator::Plus,
+                0x15 => Operator::Minus,
+                0x16 => Operator::Asterisk,
+                0x17 => Operator::Slash,
+                0x18 => Operator::Percent,
+                0x19 => Operator::BitAnd,
+                0x1A => Operator::BitOr,
+                0x1B => Operator::BitXor,
+                0x1C => Operator::ShiftLeft,
+                0x1D => Operator::ShiftRight,
+                0x1E => Operator::Assign,
+                _ => unimplemented!("unsupported operator: {}", op),
+            };
+
             Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }
         } else {
             panic!();
@@ -459,6 +474,11 @@ impl<'bc> Parser<'bc> {
         } else if self.consume_exact(b'\\') {
             let op = self.consume().unwrap();
             let expr = self.expr_term();
+            let op = match op {
+                0x00 => Operator::Plus,
+                0x01 => Operator::Minus,
+                _ => unimplemented!(),
+            };
             Expr::Unary { op, expr: Box::new(expr) }
         } else if self.consume_exact(b'(') {
             let expr = self.expr_bool();
@@ -480,7 +500,7 @@ impl<'bc> Parser<'bc> {
         if self.consume_slice(b"\\=") {
             let inner = self.expr_cond();
             let rhs = self.expr_bool_loop_and(inner);
-            self.expr_bool_loop_or(Expr::Binary { op: 0x3d, lhs: Box::new(tok), rhs: Box::new(rhs) })
+            self.expr_bool_loop_or(Expr::Binary { op: Operator::Or, lhs: Box::new(tok), rhs: Box::new(rhs) })
         } else {
             tok
         }
@@ -489,7 +509,7 @@ impl<'bc> Parser<'bc> {
     fn expr_bool_loop_and(&mut self, tok: Expr) -> Expr {
         if self.consume_slice(b"\\<") {
             let rhs = self.expr_cond();
-            self.expr_bool_loop_and(Expr::Binary { op: 0x3c, lhs: Box::new(tok), rhs: Box::new(rhs) })
+            self.expr_bool_loop_and(Expr::Binary { op: Operator::And, lhs: Box::new(tok), rhs: Box::new(rhs) })
         } else {
             tok
         }
@@ -508,6 +528,15 @@ impl<'bc> Parser<'bc> {
         if let &[b'\\', op @ 0x28..=0x2d, ..] = self.slice() {
             self.advance(2);
             let rhs = self.expr_arithm();
+            let op = match op {
+                0x28 => Operator::Equal,
+                0x29 => Operator::NotEqual,
+                0x2A => Operator::LessEqual,
+                0x2B => Operator::Less,
+                0x2C => Operator::GreaterEqual,
+                0x2D => Operator::Greater,
+                _ => unreachable!(),
+            };
             let new_piece = Expr::Binary { op, lhs: Box::new(tok), rhs: Box::new(rhs) };
             self.expr_cond_loop(new_piece)
         } else {
@@ -526,6 +555,11 @@ impl<'bc> Parser<'bc> {
             self.advance(2);
             let other = self.expr_term();
             let rhs = self.expr_arithm_loop_hi_prec(other);
+            let op = match op {
+                0x00 => Operator::Plus,
+                0x01 => Operator::Minus,
+                _ => unreachable!(),
+            };
             let new_piece = Expr::Binary { op, lhs: Box::new(tok), rhs: Box::new(rhs) };
             self.expr_arithm_loop(new_piece)
         } else {
@@ -536,6 +570,17 @@ impl<'bc> Parser<'bc> {
     fn expr_arithm_loop_hi_prec(&mut self, tok: Expr) -> Expr {
         if let &[b'\\', op @ 0x02..=0x09, ..] = self.slice() {
             self.advance(2);
+            let op = match op {
+                0x02 => Operator::Asterisk,
+                0x03 => Operator::Slash,
+                0x04 => Operator::Percent,
+                0x05 => Operator::BitAnd,
+                0x06 => Operator::BitOr,
+                0x07 => Operator::BitXor,
+                0x08 => Operator::ShiftLeft,
+                0x09 => Operator::ShiftRight,
+                _ => unreachable!(),
+            };
             let new_piece = Expr::Binary { op, lhs: Box::new(tok), rhs: Box::new(self.expr_term()) };
             self.expr_arithm_loop_hi_prec(new_piece)
         } else {
@@ -692,9 +737,32 @@ pub enum Expr {
     IntConst { value: i32 },
     StringConst { value: Box<str> },
     MemRef { bank: u8, location: Box<Self> },
-    Unary { op: u8, expr: Box<Self> },
-    Binary { op: u8, lhs: Box<Self>, rhs: Box<Self> },
+    Unary { op: Operator, expr: Box<Self> },
+    Binary { op: Operator, lhs: Box<Self>, rhs: Box<Self> },
     Special { tag: u32, exprs: Box<[Self]> },
+}
+
+#[repr(u8)]
+pub enum Operator {
+    Equal,
+    NotEqual,
+    LessEqual,
+    Less,
+    GreaterEqual,
+    Greater,
+    And,
+    Or,
+    Plus,
+    Minus,
+    Asterisk,
+    Slash,
+    Percent,
+    BitAnd,
+    BitOr,
+    BitXor,
+    ShiftLeft,
+    ShiftRight,
+    Assign,
 }
 
 impl std::fmt::Debug for Expr {
@@ -714,30 +782,30 @@ impl std::fmt::Debug for Expr {
                 other => todo!("{}", other),
             }, location)?,
             Expr::Unary { op, expr } => write!(f, "{}{:?}", match op {
-                1 => "-",
-                _ => todo!(),
+                Operator::Plus => "+",
+                Operator::Minus => "-",
+                _ => unimplemented!()
             }, expr)?,
             Expr::Binary { op, lhs, rhs } => write!(f, "{:?} {} {:?}", lhs, match *op {
-                0 | 20 => "+",
-                1 | 21 => "-",
-                2 | 22 => "*",
-                3 | 23 => "/",
-                4 | 24 => "%",
-                5 | 25 => "&",
-                6 | 26 => "|",
-                7 | 27 => "^",
-                8 | 28 => "<<",
-                9 | 29 => ">>",
-                30 => "=",
-                40 => "==",
-                41 => "!=",
-                42 => "<=",
-                43 => "<",
-                44 => ">=",
-                45 => ">",
-                60 => "&&",
-                61 => "||",
-                _ => unimplemented!(),
+                Operator::Equal => "==",
+                Operator::NotEqual => "!=",
+                Operator::LessEqual => "<=",
+                Operator::Less => "<",
+                Operator::GreaterEqual => ">=",
+                Operator::Greater => ">",
+                Operator::And => "&&",
+                Operator::Or => "||",
+                Operator::Plus => "+",
+                Operator::Minus => "-",
+                Operator::Asterisk => "*",
+                Operator::Slash => "/",
+                Operator::Percent => "%",
+                Operator::BitAnd => "&",
+                Operator::BitOr => "|",
+                Operator::BitXor => "^",
+                Operator::ShiftLeft => "<<",
+                Operator::ShiftRight => ">>",
+                Operator::Assign => "=",
             }, rhs)?,
             Expr::Special { tag, exprs } => {
                 write!(f, "{}:{{", tag)?;

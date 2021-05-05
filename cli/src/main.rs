@@ -77,6 +77,10 @@ fn main() -> Result<(), MyError> {
             }
         }
     }
+    let before = total_items.len();
+    total_items.retain(|c| !matches!(c.2, Element::Line(_)));
+    let removed = before - total_items.len();
+    println!("{}", removed);
 
     drop(archive);
     drop(buffer);
