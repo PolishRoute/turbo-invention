@@ -68,8 +68,7 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) -> Vec<(usize,
                                 parser.advance(1);
                                 s.push(c);
                             }
-                            parser.advance(1);
-                            s.push(c);
+                            s.push(parser.consume().unwrap());
                         }
                     }
                 }
