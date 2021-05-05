@@ -74,7 +74,7 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) -> Vec<(usize,
                     }
                 }
                 assert!(!s.is_empty());
-                Element::Textout(encoding_rs::SHIFT_JIS.decode(&s).0.into_owned())
+                Element::Textout(encoding_rs::SHIFT_JIS.decode(&s).0.into_owned().into_boxed_str())
             }
         };
         if DEBUG {
@@ -276,7 +276,7 @@ fn read_function(parser: &mut Parser) -> Element {
                 parser.consume();
             }
             let target = i32::from_le_bytes(parser.consume_n()) as usize;
-            Element::GoSubWith { target, meta, params }
+            Element::GoSubWith { target, meta, params: params.into_boxed_slice() }
         }
         0x00020000 |
         0x00020001 |
@@ -292,13 +292,13 @@ fn read_function(parser: &mut Parser) -> Element {
                 }
                 parser.consume();
             }
-            Element::FunctionCall { meta, params }
+            Element::FunctionCall { meta, params: params.into_boxed_slice() }
         }
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct CallMeta {
+pub struct CallMeta {
     r#type: u8,
     module: u8,
     opcode: u16,
@@ -354,7 +354,7 @@ fn select(parser: &mut Parser, meta: CallMeta) -> Element {
         } else {
             // Read text
             let text = parser.string();
-            Expr::StringConst { value: text }
+            Expr::StringConst { value: text.into_boxed_str() }
         };
 
         parser.expect(b'\n');
@@ -370,7 +370,7 @@ fn select(parser: &mut Parser, meta: CallMeta) -> Element {
         parser.advance(2);
     }
     parser.expect(b'}');
-    Element::Select { cond: cond.map(Box::new), params, first_line }
+    Element::Select { cond: cond.map(Box::new), params: params.into_boxed_slice(), first_line }
 }
 
 pub(crate) struct Parser<'bc> {
@@ -594,7 +594,7 @@ impl<'bc> Parser<'bc> {
         } else if is_string_char(self.current().unwrap()) {
             // Read text
             let text = self.string();
-            Expr::StringConst { value: text }
+            Expr::StringConst { value: text.into_boxed_str() }
         } else if self.consume_exact(b'a') {
             let mut exprs = Vec::new();
 
@@ -614,7 +614,7 @@ impl<'bc> Parser<'bc> {
                 exprs.push(self.param());
             }
 
-            Expr::Special { tag, exprs }
+            Expr::Special { tag, exprs: exprs.into_boxed_slice() }
         } else {
             self.expr()
         }
@@ -667,34 +667,34 @@ fn is_string_char(b: u8) -> bool {
 }
 
 #[derive(Debug)]
-pub(crate) enum Element {
+pub enum Element {
     Halt,
     Entrypoint(usize),
     Kidoku(usize),
     Line(usize),
     Expr(Expr),
-    Textout(String),
-    FunctionCall { meta: CallMeta, params: Vec<Expr> },
-    GoSubWith { target: usize, meta: CallMeta, params: Vec<Expr> },
+    Textout(Box<str>),
+    FunctionCall { meta: CallMeta, params: Box<[Expr]> },
+    GoSubWith { target: usize, meta: CallMeta, params: Box<[Expr]> },
     Goto { target: usize },
     GotoIf { cond: Expr, target: usize },
-    Select { cond: Option<Box<Expr>>, params: Vec<SelectOption>, first_line: u16 },
+    Select { cond: Option<Box<Expr>>, params: Box<[SelectOption]>, first_line: u16 },
 }
 
 #[derive(Debug)]
-pub(crate) struct SelectOption {
+pub struct SelectOption {
     line: u16,
     pub(crate) text: Expr,
 }
 
-pub(crate) enum Expr {
+pub enum Expr {
     StoreRegister,
     IntConst { value: i32 },
-    StringConst { value: String },
+    StringConst { value: Box<str> },
     MemRef { bank: u8, location: Box<Self> },
     Unary { op: u8, expr: Box<Self> },
     Binary { op: u8, lhs: Box<Self>, rhs: Box<Self> },
-    Special { tag: u32, exprs: Vec<Self> },
+    Special { tag: u32, exprs: Box<[Self]> },
 }
 
 impl std::fmt::Debug for Expr {
@@ -742,7 +742,7 @@ impl std::fmt::Debug for Expr {
             Expr::Special { tag, exprs } => {
                 write!(f, "{}:{{", tag)?;
                 let mut first = true;
-                for e in exprs {
+                for e in exprs.iter() {
                     if !first {
                         write!(f, ",")?;
                     } else {

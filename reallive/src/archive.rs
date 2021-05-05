@@ -7,13 +7,13 @@ use crate::keys::{detect_key, XorKey};
 use crate::MyError;
 use crate::parse::{Element, Parser, read_bytecode};
 
-pub(crate) struct Archive<'d> {
+pub struct Archive<'d> {
     data: &'d [u8],
     scenarios: Vec<(u32, Range<usize>)>,
 }
 
 impl<'d> Archive<'d> {
-    pub(crate) fn scenarios(&self) -> impl Iterator<Item=Scenario> + '_ {
+    pub fn scenarios(&self) -> impl Iterator<Item=Scenario> + '_ {
         (0..self.scenarios.len()).map(move |idx| self.get(idx).unwrap())
     }
 
@@ -44,14 +44,18 @@ struct Header {
     use_xor2: bool,
 }
 
-pub(crate) struct Scenario<'d> {
-    pub(crate) id: u32,
+pub struct Scenario<'d> {
+    id: u32,
     range: Range<usize>,
     data: &'d [u8],
 }
 
 impl<'d> Scenario<'d> {
-    pub(crate) fn read(&self) -> Option<Vec<(usize, Element)>> {
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    pub fn read(&self) -> Option<Vec<(usize, Element)>> {
         let data = &self.data[self.range.clone()];
         let header = parse_header(&data).unwrap();
         let (cd, uncompressed) = read_script(
@@ -59,13 +63,13 @@ impl<'d> Scenario<'d> {
             header.use_xor2,
             detect_key(b"KEY\\CLANNAD_FV"),
         );
-        std::fs::write(format!("scenario{:04}.txt", self.id), &uncompressed).unwrap();
+        // std::fs::write(format!("scenario{:04}.txt", self.id), &uncompressed).unwrap();
         let mut parser = Parser::new_at(&uncompressed, 0);
         Some(read_bytecode(&mut parser, &cd.kidoku_table))
     }
 }
 
-pub(crate) fn read_archive(data: &[u8]) -> io::Result<Archive> {
+pub fn read_archive(data: &[u8]) -> io::Result<Archive> {
     let mut scenarios = Vec::new();
     let mut reader = io::Cursor::new(data);
     for i in 0..10000 {

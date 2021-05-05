@@ -1,12 +1,8 @@
-use crate::archive::read_archive;
-use crate::parse::Element;
+use std::cmp::Reverse;
 
-mod parse;
-mod archive;
-mod keys;
+use reallive::{Element, Expr, read_archive};
 
 type MyError = Box<dyn std::error::Error>;
-
 
 fn main() -> Result<(), MyError> {
     let path = std::env::args_os().nth(1).unwrap_or_else(|| {
@@ -19,6 +15,8 @@ fn main() -> Result<(), MyError> {
     let buffer = std::fs::read(path)?;
     let archive = read_archive(&buffer)?;
 
+    let mut stats = Vec::new();
+
     for scenario in archive.scenarios() {
         let result = std::panic::catch_unwind(|| {
             let s = std::time::Instant::now();
@@ -28,13 +26,19 @@ fn main() -> Result<(), MyError> {
         match result {
             Ok((time, items)) => {
                 total += time;
-                total_items.extend(items.into_iter().map(|(o, e)| (scenario.id, o, e)));
+                stats.push((scenario.id(), items.len(), time));
+                total_items.extend(items.into_iter().map(|(o, e)| (scenario.id(), o, e)));
             }
             Err(e) => {
                 println!("{:?}", e);
                 panic!();
             }
         }
+    }
+
+    stats.sort_by_key(|k| Reverse(k.2 / k.1 as u32));
+    for (scenario, items, time) in stats {
+        println!("#{:04} | {:>5} items | {:?} | {:?}", scenario, items, time / items as u32, time);
     }
 
     println!("Parsed {} items in {:?}", total_items.len(), total);
@@ -69,10 +73,18 @@ fn main() -> Result<(), MyError> {
                 assert!(total_items.iter().any(|it| it.1 == *target));
             }
             Element::Select { cond, params, first_line } => {
-                println!("{}:{}  {:?} {:#?}", scenario, offset, cond, params)
+                // println!("{}:{}  {:?} {:#?}", scenario, offset, cond, params)
             }
         }
     }
+
+    drop(archive);
+    drop(buffer);
+    println!("{}", std::mem::size_of::<Element>());
+    println!("{}", std::mem::size_of::<Expr>());
+    total_items.shrink_to_fit();
+
+    std::thread::sleep(std::time::Duration::from_secs(5));
 
     Ok(())
 }
