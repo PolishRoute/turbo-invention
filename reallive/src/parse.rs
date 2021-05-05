@@ -301,7 +301,7 @@ fn read_function(parser: &mut Parser) -> Element {
 pub struct CallMeta {
     r#type: u8,
     module: u8,
-    opcode: u16,
+    pub opcode: u16,
     argc: u16,
     overload: u8,
 }
@@ -742,6 +742,7 @@ pub enum Expr {
     Special { tag: u32, exprs: Box<[Self]> },
 }
 
+#[derive(Debug)]
 #[repr(u8)]
 pub enum Operator {
     Equal,
