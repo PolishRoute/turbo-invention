@@ -5,31 +5,37 @@ use std::cmp::Reverse;
 use reallive::{Element, Expr, read_archive, CallMeta, Operator};
 use std::collections::HashMap;
 use std::borrow::Cow;
-use std::process::exit;
+use std::fmt::Formatter;
 
 type MyError = Box<dyn std::error::Error>;
 
 struct Memory {
-    banks: [Vec<i32>; 6],
+    int_banks: [Vec<i32>; 6],
+    str_banks: [Vec<String>; 2],
     register: i32,
 }
 
 impl Memory {
     fn new() -> Self {
         Self {
-            banks: [(); 6].map(|_| vec![0; 10000]),
+            int_banks: [(); 6].map(|_| vec![0; 10000]),
+            str_banks: [(); 2].map(|_| vec![String::new(); 10000]),
             register: 0,
         }
     }
 
     fn get(&self, bank: u8, location: usize) -> Value<'static> {
-        Value::Integer(2137)
+        match bank {
+            0..=6 => Value::Int(self.int_banks[bank as usize][location]),
+            18 => Value::Str(self.str_banks[0][location].clone().into()),
+            _ => todo!("getting {}[{}]", bank, location),
+        }
     }
 
     fn set(&mut self, bank: u8, location: usize, value: Value) {
         match (bank, value) {
-            (0..=6, Value::Integer(x)) => {
-                self.banks[bank as usize][location] = x;
+            (0..=6, Value::Int(x)) => {
+                self.int_banks[bank as usize][location] = x;
             }
             (bank, value) => todo!("setting {}[{}] to {:?}", bank, location, value),
         }
@@ -52,18 +58,35 @@ impl Machine {
     }
 }
 
-#[derive(Debug)]
 #[derive(Clone)]
 enum Value<'s> {
-    String(Cow<'s, str>),
-    Integer(i32),
+    Str(Cow<'s, str>),
+    Int(i32),
+    Bool(bool),
+}
+
+impl<'s> std::fmt::Debug for Value<'s> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Str(s) => write!(f, "{:?}", s),
+            Value::Int(s) => write!(f, "{}", s),
+            Value::Bool(s) => write!(f, "{:?}", s),
+        }
+    }
 }
 
 impl<'s> Value<'s> {
     fn as_integer(&self) -> Option<i32> {
         match self {
-            Value::String(_) => None,
-            Value::Integer(s) => Some(*s),
+            Value::Str(_) | Value::Bool(_) => None,
+            Value::Int(s) => Some(*s),
+        }
+    }
+
+    fn as_bool(&self) -> Option<bool> {
+        match self {
+            Value::Str(_) | Value::Int(_) => None,
+            Value::Bool(x) => Some(*x),
         }
     }
 }
@@ -79,14 +102,16 @@ enum StepResult<'bc> {
 
 fn evaluate_expr<'s>(expr: &'s Expr, machine: &mut Machine) -> Value<'s> {
     match expr {
-        Expr::IntConst { value } => Value::Integer(*value),
+        Expr::StoreRegister => Value::Int(machine.memory.register),
+        Expr::StringConst { value } => Value::Str(Cow::Borrowed(value)),
+        Expr::IntConst { value } => Value::Int(*value),
         Expr::MemRef { bank, location } => {
             let location = evaluate_expr(location, machine).as_integer().unwrap() as usize;
             machine.memory.get(*bank, location)
         }
         Expr::Binary { op, lhs, rhs } => {
             if let Operator::Assign = op {
-                match &**lhs {
+                match lhs.as_ref() {
                     Expr::MemRef { bank, location } => {
                         let location = evaluate_expr(location, machine).as_integer().unwrap() as usize;
                         let value = evaluate_expr(rhs, machine);
@@ -96,31 +121,39 @@ fn evaluate_expr<'s>(expr: &'s Expr, machine: &mut Machine) -> Value<'s> {
                     _ => todo!(),
                 }
             } else {
-                let lhs = evaluate_expr(lhs, machine).as_integer().unwrap();
-                let rhs = evaluate_expr(rhs, machine).as_integer().unwrap();
-                match op {
-                    Operator::Asterisk => Value::Integer(lhs * rhs),
-                    Operator::Plus => Value::Integer(lhs + rhs),
-                    Operator::Minus => Value::Integer(lhs - rhs),
-                    Operator::Slash => Value::Integer(lhs / rhs),
-                    _ => todo!("{:?}", op),
+                match (evaluate_expr(lhs, machine), evaluate_expr(rhs, machine)) {
+                    (Value::Int(lhs), Value::Int(rhs)) => {
+                        match op {
+                            Operator::Asterisk => Value::Int(lhs * rhs),
+                            Operator::Plus => Value::Int(lhs + rhs),
+                            Operator::Minus => Value::Int(lhs - rhs),
+                            Operator::Slash => Value::Int(lhs / rhs),
+                            Operator::Greater => Value::Bool(lhs > rhs),
+                            Operator::GreaterEqual => Value::Bool(lhs >= rhs),
+                            Operator::LessEqual => Value::Bool(lhs <= rhs),
+                            Operator::Equal => Value::Bool(lhs == rhs),
+                            _ => todo!("{:?}", op),
+                        }
+                    }
+                    (Value::Bool(lhs), Value::Bool(rhs)) => {
+                        match op {
+                            Operator::And => Value::Bool(lhs && rhs),
+                            Operator::Or => Value::Bool(lhs || rhs),
+                            _ => todo!("{:?} on bool", op),
+                        }
+                    }
+                    _ => todo!(),
                 }
             }
-        }
-        Expr::StoreRegister => {
-            Value::Integer(machine.memory.register)
-        }
-        Expr::StringConst { value } => {
-            Value::String(Cow::Borrowed(value))
         }
         Expr::Unary { op, expr } => {
             let value = evaluate_expr(expr, machine).as_integer().unwrap();
             match op {
-                Operator::Minus => Value::Integer(-value),
+                Operator::Minus => Value::Int(-value),
                 _ => todo!("{:?}", op),
             }
         }
-        Expr::Special { .. } => Value::String("".into()),
+        Expr::Special { .. } => Value::Str("".into()),
     }
 }
 
@@ -169,9 +202,12 @@ fn step<'s>(machine: &mut Machine, scenarios: &'s [Scenario]) -> StepResult<'s> 
             StepResult::Continue
         }
         Element::GotoIf { target, cond } => {
-            println!("goto {} if {:?}", target, cond);
-            println!("evalauting as false");
-            machine.pointer += 1;
+            let cond = evaluate_expr(cond, machine).as_bool().unwrap();
+            if cond {
+                machine.pointer = scenario.elements.partition_point(|p| p.0 < *target);
+            } else {
+                machine.pointer += 1;
+            }
             StepResult::Continue
         }
         Element::Select { cond, params, first_line } => todo!(),
@@ -199,7 +235,7 @@ fn main() -> Result<(), MyError> {
         .collect();
 
     let mut m = Machine::new(scenarios.iter().next().unwrap().id);
-    loop {
+    for _ in 0..500 {
         match step(&mut m, &scenarios) {
             StepResult::Continue | StepResult::Halt => {}
             StepResult::Call(meta, params) => {
