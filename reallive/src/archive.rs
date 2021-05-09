@@ -79,17 +79,15 @@ pub fn read_archive(data: &[u8]) -> io::Result<Archive> {
             i32::from_le_bytes(buf)
         } as usize;
 
-        if offs == 0 {
-            continue;
-        }
-
         let len = {
             let mut buf = [0u8; 4];
             reader.read_exact(&mut buf)?;
             i32::from_le_bytes(buf)
         } as usize;
 
-        scenarios.push((i, offs..offs + len));
+        if offs != 0 {
+            scenarios.push((i, offs..offs + len));
+        }
     }
     Ok(Archive { scenarios, data })
 }
