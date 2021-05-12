@@ -1,9 +1,6 @@
 #![feature(array_map)]
 
-use std::cmp::Reverse;
-
 use reallive::{Element, Expr, read_archive, CallMeta, Operator};
-use std::collections::HashMap;
 use std::borrow::Cow;
 use std::fmt::Formatter;
 
@@ -154,14 +151,15 @@ fn evaluate_expr<'s>(expr: &'s Expr, machine: &mut Machine) -> Value<'s> {
             }
         }
         Expr::Special { .. } => Value::Str("".into()),
+        Expr::Unknown { .. } => Value::Str("".into()),
     }
 }
 
 fn step<'s>(machine: &mut Machine, scenarios: &'s [Scenario]) -> StepResult<'s> {
     let idx = scenarios.binary_search_by_key(&machine.scenario, |x| x.id).unwrap();
     let scenario = &scenarios[idx];
-    let (pos, inst) = match scenario.elements.get(machine.pointer) {
-        Some(x) => x,
+    let inst = match scenario.elements.get(machine.pointer) {
+        Some(x) => &x.1,
         None => return StepResult::Exit,
     };
 
@@ -196,7 +194,7 @@ fn step<'s>(machine: &mut Machine, scenarios: &'s [Scenario]) -> StepResult<'s> 
             machine.pointer += 1;
             ret
         }
-        Element::GoSubWith { target, .. } => todo!(),
+        Element::GoSubWith { .. } => todo!(),
         Element::Goto { target } => {
             machine.pointer = scenario.elements.partition_point(|p| p.0 < *target);
             StepResult::Continue
@@ -210,7 +208,9 @@ fn step<'s>(machine: &mut Machine, scenarios: &'s [Scenario]) -> StepResult<'s> 
             }
             StepResult::Continue
         }
-        Element::Select { cond, params, first_line } => todo!(),
+        Element::Select { .. } => todo!(),
+        Element::GotoCase { .. } => todo!(),
+        Element::Unknown0x0002000a { .. } => todo!(),
     }
 }
 

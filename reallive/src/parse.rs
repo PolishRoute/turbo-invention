@@ -88,7 +88,9 @@ pub(crate) fn read_bytecode(parser: &mut Parser, table: &[usize]) -> Vec<(usize,
                 Element::GoSubWith { target: _, meta: _, params: _ } => println!("{:?}", element),
                 Element::Goto { target: _ } => println!("{:?}", element),
                 Element::GotoIf { target: _, cond: _ } => println!("{:?}", element),
+                Element::GotoCase { cond, cases } => println!("{:?} {:?}", cond, cases),
                 Element::Select { cond: _, params, first_line: _ } => println!("select: {:?}", params),
+                Element::Unknown0x0002000a { expr, items } => println!("Unknown0x0002000a: {:?} {:?}", expr, items),
             }
         }
         elements.push((start, element));
@@ -139,7 +141,7 @@ mod tests {
             0x24, 0xff, 0x00, 0x00, 0x00, 0x00,
             0x29, // )
         ]);
-        assert_eq!(repr(&e), "FunctionCall { meta: CallMeta { type: 0, module: 1, opcode: 12, argc: 2, overload: 1 }, params: [9077, 0] }");
+        assert_eq!(repr(&e), "FunctionCall { meta: CallMeta { module_type: 0, module: 1, opcode: 12, argc: 2, overload: 1 }, params: [9077, 0] }");
     }
 
     #[test]
@@ -147,7 +149,7 @@ mod tests {
         let e = parse_element(&[
             0x23, 0x01, 0x04, 0x72, 0x00, 0x00, 0x00, 0x01
         ]);
-        assert_eq!(repr(&e), "FunctionCall { meta: CallMeta { type: 1, module: 4, opcode: 114, argc: 0, overload: 1 }, params: [] }");
+        assert_eq!(repr(&e), "FunctionCall { meta: CallMeta { module_type: 1, module: 4, opcode: 114, argc: 0, overload: 1 }, params: [] }");
     }
 
     #[test]
@@ -171,7 +173,7 @@ mod tests {
             0x4E, 0x4F, 0x4E, 0x45, // NONE
             0x29, // )
         ]);
-        assert_eq!(repr(&e), "FunctionCall { meta: CallMeta { type: 1, module: 10, opcode: 0, argc: 2, overload: 0 }, params: [strS[1001], \"NONE\"] }");
+        assert_eq!(repr(&e), "FunctionCall { meta: CallMeta { module_type: 1, module: 10, opcode: 0, argc: 2, overload: 0 }, params: [strS[1001], \"NONE\"] }");
     }
 
     #[test]
@@ -214,6 +216,45 @@ mod tests {
             0x7D
         ]);
         assert_eq!(repr(&e), r#"Select { cond: None, params: [SelectOption { line: 20, text: strS[1011] }, SelectOption { line: 21, text: strS[1012] }], first_line: 19 }"#);
+    }
+
+    #[test]
+    fn test_9031() {
+        let e = parse_element(&[
+            0x23, 0x01, 0x04, 0x6C, 0x02, 0x01, 0x00, 0x00,
+            0x28,
+            0x28,
+            0x24, 0xFF, 0x00, 0x00, 0x00, 0x00,
+            0x24, 0xFF, 0x00, 0x00, 0x00, 0x00,
+            0x24, 0xFF, 0x10, 0x27, 0x00, 0x00,
+            0x24, 0x02, 0x5B,
+            0x24, 0xFF, 0x00, 0x00, 0x00, 0x00,
+            0x5D,
+            0x29,
+            0x29
+        ]);
+        assert_eq!(repr(&e), r#"FunctionCall { meta: CallMeta { module_type: 1, module: 4, opcode: 620, argc: 1, overload: 0 }, params: [unknown [0, 0, 10000, C[0]]] }"#);
+    }
+
+    #[test]
+    fn test_9053() {
+        let e = parse_element(&[
+            0x23, 0x01, 0x04, 0x6C, 0x02, 0x01, 0x00, 0x00,
+            0x28,
+            0x28,
+            0x24, 0xFF, 0x01, 0x00, 0x00, 0x00,
+            0x2C,
+            0x5C, 0x01,
+            0x24, 0xFF, 0x32, 0x00, 0x00, 0x00,
+            0x24, 0xFF, 0x00, 0x00, 0x00, 0x00,
+            0x24, 0x02,
+            0x5B,
+            0x24, 0xFF, 0x01, 0x00, 0x00, 0x00,
+            0x5D,
+            0x29,
+            0x29
+        ]);
+        assert_eq!(repr(&e), r#"FunctionCall { meta: CallMeta { module_type: 1, module: 4, opcode: 620, argc: 1, overload: 0 }, params: [unknown [1, -50, 0, C[1]]] }"#);
     }
 }
 
@@ -264,7 +305,27 @@ fn read_function(parser: &mut Parser) -> Element {
         0x00050004 |
         0x00050009 |
         0x00060004 |
-        0x00060009 => panic!("gotocase"),
+        0x00060009 => {
+            parser.expect(b'(');
+            let cond = parser.expr();
+            parser.expect(b')');
+            parser.expect(b'{');
+            let mut cases = Vec::new();
+            for _ in 0..meta.argc {
+                parser.expect(b'(');
+                let case = if parser.consume_exact(b')') {
+                    None
+                } else {
+                    let expr = parser.expr();
+                    parser.expect(b')');
+                    Some(expr)
+                };
+                let target = i32::from_le_bytes(parser.consume_n()) as u32;
+                cases.push((case, target));
+            }
+            parser.expect(b'}');
+            Element::GotoCase { cond, cases: cases.into_boxed_slice() }
+        }
         0x00010010 |
         0x00060010 => {
             let mut params = Vec::new();
@@ -282,11 +343,41 @@ fn read_function(parser: &mut Parser) -> Element {
         0x00020002 |
         0x00020003 |
         0x00020010 => select(parser, meta),
+        0x0002000a => {
+            parser.expect(b'(');
+            let expr = parser.expr();
+            parser.expect(b')');
+            parser.expect(b'{');
+
+            let mut items = vec![];
+            while !parser.consume_exact(b'}') {
+                if parser.consume_exact(b'\n') {
+                    parser.advance(2);
+                    continue;
+                }
+
+                let item = if parser.consume_exact(b'(') {
+                    let mut x = vec![];
+                    while !parser.consume_exact(b')') {
+                        x.push(parser.param());
+                    }
+                    (x, parser.param())
+                } else {
+                    (vec![], parser.param())
+                };
+                items.push(item);
+            }
+            Element::Unknown0x0002000a { expr, items }
+        }
         _ => {
             // Other opcodes
             let mut params = Vec::new();
             if parser.consume_exact(b'(') {
                 while parser.current() != Some(b')') {
+                    if parser.consume_exact(b'\n') {
+                        parser.advance(2);
+                        continue;
+                    }
                     params.push(parser.param());
                 }
                 parser.consume();
@@ -296,21 +387,50 @@ fn read_function(parser: &mut Parser) -> Element {
     }
 }
 
+#[allow(unused)]
+fn debug_parse(parser: &mut Parser) {
+    let mut indent = 0;
+    loop {
+        if parser.consume_exact(b'\n') {
+            let line = i16::from_le_bytes(parser.consume_n());
+            // println!("{}", line);
+        }
+
+        if parser.consume_exact(b'(') {
+            print!("{}", (0..indent).map(|_| ' ').collect::<String>());
+            println!("<group>");
+            indent += 1;
+        } else if parser.consume_exact(b')') {
+            indent -= 1;
+            print!("{}", (0..indent).map(|_| ' ').collect::<String>());
+            println!("</group>");
+        } else if parser.consume_exact(b'}') {
+            break;
+        } else {
+            let x = parser.param();
+            print!("{}", (0..indent).map(|_| ' ').collect::<String>());
+            println!("{:?}", &x);
+        }
+    }
+    assert_eq!(indent, 0);
+}
+
 #[derive(Debug)]
+#[derive(Clone)]
 pub struct CallMeta {
-    r#type: u8,
-    module: u8,
+    pub module_type: u8,
+    pub module: u8,
     pub opcode: u16,
-    argc: u16,
-    overload: u8,
+    pub argc: u16,
+    pub overload: u8,
 }
 
 fn read_call_meta(parser: &mut Parser) -> CallMeta {
-    let [r#type, module, opcode1, opcode2, argc1, argc2, overload] = parser.consume_n();
+    let [module_type, module, opcode1, opcode2, argc1, argc2, overload] = parser.consume_n();
     let opcode = (opcode2 as u16) << 8 | (opcode1 as u16);
     let argc = (argc2 as u16) << 8 | (argc1 as u16);
     CallMeta {
-        r#type,
+        module_type,
         module,
         opcode,
         argc,
@@ -476,7 +596,8 @@ impl<'bc> Parser<'bc> {
             let op = match op {
                 0x00 => Operator::Plus,
                 0x01 => Operator::Minus,
-                _ => unimplemented!(),
+                0x03 => Operator::Unknown,
+                _ => unimplemented!("{}", op),
             };
             Expr::Unary { op, expr: Box::new(expr) }
         } else if self.consume_exact(b'(') {
@@ -659,6 +780,14 @@ impl<'bc> Parser<'bc> {
             }
 
             Expr::Special { tag, exprs: exprs.into_boxed_slice() }
+        } else if self.consume_exact(b'(') {
+            let mut items = vec![];
+            while self.current() != Some(b')') {
+                self.consume_exact(b',');
+                items.push(self.expr());
+            }
+            self.expect(b')');
+            Expr::Unknown { items: items.into_boxed_slice() }
         } else {
             self.expr()
         }
@@ -711,6 +840,7 @@ fn is_string_char(b: u8) -> bool {
 }
 
 #[derive(Debug)]
+#[derive(Clone)]
 pub enum Element {
     Halt,
     Entrypoint(usize),
@@ -722,15 +852,19 @@ pub enum Element {
     GoSubWith { target: usize, meta: CallMeta, params: Box<[Expr]> },
     Goto { target: usize },
     GotoIf { cond: Expr, target: usize },
+    GotoCase { cond: Expr, cases: Box<[(Option<Expr>, u32)]> },
     Select { cond: Option<Box<Expr>>, params: Box<[SelectOption]>, first_line: u16 },
+    Unknown0x0002000a { expr: Expr, items: Vec<(Vec<Expr>, Expr)> },
 }
 
 #[derive(Debug)]
+#[derive(Clone)]
 pub struct SelectOption {
     line: u16,
     pub(crate) text: Expr,
 }
 
+#[derive(Clone)]
 pub enum Expr {
     StoreRegister,
     IntConst { value: i32 },
@@ -739,10 +873,12 @@ pub enum Expr {
     Unary { op: Operator, expr: Box<Self> },
     Binary { op: Operator, lhs: Box<Self>, rhs: Box<Self> },
     Special { tag: u32, exprs: Box<[Self]> },
+    Unknown { items: Box<[Expr]> },
 }
 
 #[derive(Debug)]
 #[repr(u8)]
+#[derive(Copy, Clone)]
 pub enum Operator {
     Equal,
     NotEqual,
@@ -763,6 +899,7 @@ pub enum Operator {
     ShiftLeft,
     ShiftRight,
     Assign,
+    Unknown,
 }
 
 impl std::fmt::Debug for Expr {
@@ -779,11 +916,12 @@ impl std::fmt::Debug for Expr {
                 0x12 => "strS".to_string(),
                 25 => "intZ".to_string(),
                 11 => "intL".to_string(),
-                other => todo!("{}", other),
+                other => format!("unknown{}", other),
             }, location)?,
             Expr::Unary { op, expr } => write!(f, "{}{:?}", match op {
                 Operator::Plus => "+",
                 Operator::Minus => "-",
+                Operator::Unknown => "???",
                 _ => unimplemented!()
             }, expr)?,
             Expr::Binary { op, lhs, rhs } => write!(f, "{:?} {} {:?}", lhs, match *op {
@@ -806,6 +944,7 @@ impl std::fmt::Debug for Expr {
                 Operator::ShiftLeft => "<<",
                 Operator::ShiftRight => ">>",
                 Operator::Assign => "=",
+                Operator::Unknown => "???",
             }, rhs)?,
             Expr::Special { tag, exprs } => {
                 write!(f, "{}:{{", tag)?;
@@ -820,6 +959,7 @@ impl std::fmt::Debug for Expr {
                 }
                 write!(f, "}}")?;
             }
+            Expr::Unknown { items } => write!(f, "unknown {:?}", items)?,
         }
         Ok(())
     }
