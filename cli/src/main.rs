@@ -1,30 +1,37 @@
 #![feature(array_map)]
 
-use reallive::{Element, Expr, read_archive, CallMeta, Operator};
 use std::borrow::Cow;
+use std::cmp::Reverse;
+use std::collections::HashMap;
 use std::fmt::Formatter;
+
+use reallive::{CallMeta, Element, Expr, Operator, read_archive};
 
 type MyError = Box<dyn std::error::Error>;
 
 struct Memory {
-    int_banks: [Vec<i32>; 6],
-    str_banks: [Vec<String>; 2],
-    register: i32,
+    int_banks: [Vec<i32>; 9],
+    str_banks: [Vec<String>; 3],
+    store: Value,
 }
 
 impl Memory {
     fn new() -> Self {
         Self {
-            int_banks: [(); 6].map(|_| vec![0; 10000]),
-            str_banks: [(); 2].map(|_| vec![String::new(); 10000]),
-            register: 0,
+            int_banks: [(); 9].map(|_| vec![0; 10000]),
+            str_banks: [(); 3].map(|_| vec![String::new(); 10000]),
+            store: Value::Int(0),
         }
     }
 
-    fn get(&self, bank: u8, location: usize) -> Value<'static> {
+    fn get(&self, bank: u8, location: usize) -> Value {
         match bank {
             0..=6 => Value::Int(self.int_banks[bank as usize][location]),
-            18 => Value::Str(self.str_banks[0][location].clone().into()),
+            7 | 25 => Value::Int(self.int_banks[7][location]), // Z
+            8 | 11 => Value::Int(self.int_banks[8][location]), // L
+            0x0a => Value::Str(self.str_banks[0][location].clone().into()), // K
+            0x0c => Value::Str(self.str_banks[1][location].clone().into()), // M
+            0x12 => Value::Str(self.str_banks[2][location].clone().into()), // S
             _ => todo!("getting {}[{}]", bank, location),
         }
     }
@@ -34,35 +41,67 @@ impl Memory {
             (0..=6, Value::Int(x)) => {
                 self.int_banks[bank as usize][location] = x;
             }
+            (7 | 25, Value::Int(x)) => {
+                self.int_banks[7][location] = x;
+            }
+            (8 | 11, Value::Int(x)) => {
+                self.int_banks[8][location] = x;
+            }
             (bank, value) => todo!("setting {}[{}] to {:?}", bank, location, value),
         }
     }
 }
 
 struct Machine {
+    memory: Memory,
+    call_stack: Vec<StackFrame>,
+}
+
+#[derive(Debug)]
+struct StackFrame {
     pointer: usize,
     scenario: u32,
-    memory: Memory,
 }
 
 impl Machine {
     fn new(scenario: u32) -> Self {
         Self {
-            pointer: 0,
-            scenario,
             memory: Memory::new(),
+            call_stack: vec![
+                StackFrame {
+                    pointer: 0,
+                    scenario,
+                }
+            ],
         }
+    }
+
+    fn frame_mut(&mut self) -> Option<&mut StackFrame> {
+        self.call_stack.last_mut()
+    }
+
+    fn push_frame(&mut self, frame: StackFrame) {
+        self.call_stack.push(frame)
+    }
+
+    fn ret_with(&mut self, val: Value) {
+        self.memory.store = val;
+        self.call_stack.pop();
+    }
+
+    fn frames(&self) -> usize {
+        self.call_stack.len()
     }
 }
 
 #[derive(Clone)]
-enum Value<'s> {
-    Str(Cow<'s, str>),
+enum Value {
+    Str(Box<str>),
     Int(i32),
     Bool(bool),
 }
 
-impl<'s> std::fmt::Debug for Value<'s> {
+impl<'s> std::fmt::Debug for Value {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Str(s) => write!(f, "{:?}", s),
@@ -72,8 +111,15 @@ impl<'s> std::fmt::Debug for Value<'s> {
     }
 }
 
-impl<'s> Value<'s> {
-    fn as_integer(&self) -> Option<i32> {
+impl Value {
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            Value::Str(s)  => Some(s),
+            Value::Bool(_) | Value::Int(_) => None,
+        }
+    }
+
+    fn as_int(&self) -> Option<i32> {
         match self {
             Value::Str(_) | Value::Bool(_) => None,
             Value::Int(s) => Some(*s),
@@ -93,24 +139,24 @@ enum StepResult<'bc> {
     Continue,
     Halt,
     Text(Cow<'bc, str>),
-    Call(&'bc CallMeta, Vec<Value<'bc>>),
+    Call(&'bc CallMeta, Vec<Value>),
     Exit,
 }
 
-fn evaluate_expr<'s>(expr: &'s Expr, machine: &mut Machine) -> Value<'s> {
+fn evaluate_expr(expr: &Expr, machine: &mut Machine) -> Value {
     match expr {
-        Expr::StoreRegister => Value::Int(machine.memory.register),
-        Expr::StringConst { value } => Value::Str(Cow::Borrowed(value)),
+        Expr::StoreRegister => machine.memory.store.clone(),
+        Expr::StringConst { value } => Value::Str(value.clone()),
         Expr::IntConst { value } => Value::Int(*value),
         Expr::MemRef { bank, location } => {
-            let location = evaluate_expr(location, machine).as_integer().unwrap() as usize;
+            let location = evaluate_expr(location, machine).as_int().unwrap() as usize;
             machine.memory.get(*bank, location)
         }
         Expr::Binary { op, lhs, rhs } => {
             if let Operator::Assign = op {
                 match lhs.as_ref() {
                     Expr::MemRef { bank, location } => {
-                        let location = evaluate_expr(location, machine).as_integer().unwrap() as usize;
+                        let location = evaluate_expr(location, machine).as_int().unwrap() as usize;
                         let value = evaluate_expr(rhs, machine);
                         machine.memory.set(*bank, location, value.clone());
                         return value;
@@ -144,67 +190,83 @@ fn evaluate_expr<'s>(expr: &'s Expr, machine: &mut Machine) -> Value<'s> {
             }
         }
         Expr::Unary { op, expr } => {
-            let value = evaluate_expr(expr, machine).as_integer().unwrap();
+            let value = evaluate_expr(expr, machine).as_int().unwrap();
             match op {
                 Operator::Minus => Value::Int(-value),
                 _ => todo!("{:?}", op),
             }
         }
-        Expr::Special { .. } => Value::Str("".into()),
-        Expr::Unknown { .. } => Value::Str("".into()),
+        Expr::Special { .. } => Value::Str("/*SPECIAL*/".into()),
+        Expr::Unknown { .. } => Value::Str("/*UNKNOWN*/".into()),
     }
 }
 
 fn step<'s>(machine: &mut Machine, scenarios: &'s [Scenario]) -> StepResult<'s> {
-    let idx = scenarios.binary_search_by_key(&machine.scenario, |x| x.id).unwrap();
+    let mut frame = machine.frame_mut().unwrap();
+
+    let idx = match scenarios.binary_search_by_key(&frame.scenario, |s| s.id) {
+        Ok(idx) => idx,
+        Err(_) => panic!("could not found a scenario: {}", frame.scenario),
+    };
+
     let scenario = &scenarios[idx];
-    let inst = match scenario.elements.get(machine.pointer) {
+    let inst = match scenario.elements.get(frame.pointer) {
         Some(x) => &x.1,
         None => return StepResult::Exit,
     };
 
+    // println!("{:?}", inst);
     match inst {
         Element::Halt => {
-            machine.pointer += 1;
+            frame.pointer += 1;
             StepResult::Halt
         }
         Element::Entrypoint(_) => {
-            machine.pointer += 1;
+            frame.pointer += 1;
             StepResult::Continue
         }
         Element::Kidoku(_) => {
-            machine.pointer += 1;
+            frame.pointer += 1;
             StepResult::Continue
         }
         Element::Line(_) => {
-            machine.pointer += 1;
+            frame.pointer += 1;
             StepResult::Continue
         }
         Element::Expr(e) => {
             evaluate_expr(e, machine);
-            machine.pointer += 1;
+            machine.frame_mut().unwrap().pointer += 1;
             StepResult::Continue
         }
         Element::Textout(text) => {
-            machine.pointer += 1;
+            frame.pointer += 1;
             StepResult::Text(Cow::Borrowed(text))
         }
         Element::FunctionCall { meta, params } => {
-            let ret = StepResult::Call(meta, params.iter().map(|p| evaluate_expr(p, machine)).collect());
-            machine.pointer += 1;
-            ret
+            let args = params.iter().map(|p| evaluate_expr(p, machine)).collect();
+            machine.frame_mut().unwrap().pointer += 1;
+            StepResult::Call(meta, args)
         }
-        Element::GoSubWith { .. } => todo!(),
+        Element::GoSubWith { target, params, meta } => {
+            frame.pointer += 1;
+            let scenario_id = frame.scenario;
+            machine.push_frame(StackFrame {
+                pointer: scenario.elements.partition_point(|p| p.0 < *target),
+                scenario: scenario_id
+            });
+            println!("{} {:?} {:?} {}", target, params, meta, machine.frames());
+            StepResult::Continue
+        },
         Element::Goto { target } => {
-            machine.pointer = scenario.elements.partition_point(|p| p.0 < *target);
+            frame.pointer = scenario.elements.partition_point(|p| p.0 < *target);
             StepResult::Continue
         }
         Element::GotoIf { target, cond } => {
             let cond = evaluate_expr(cond, machine).as_bool().unwrap();
             if cond {
-                machine.pointer = scenario.elements.partition_point(|p| p.0 < *target);
+                machine.frame_mut().unwrap().pointer = scenario.elements.partition_point(|p| p.0 < *target);
             } else {
-                machine.pointer += 1;
+                machine.frame_mut().unwrap().pointer += 1;
             }
             StepResult::Continue
         }
@@ -234,13 +296,11 @@ fn main() -> Result<(), MyError> {
         })
         .collect();
 
-    let mut m = Machine::new(scenarios.iter().next().unwrap().id);
-    for _ in 0..500 {
-        match step(&mut m, &scenarios) {
+    let mut machine = Machine::new(scenarios.iter().next().unwrap().id);
+    for _ in 0.. {
+        match step(&mut machine, &scenarios) {
             StepResult::Continue | StepResult::Halt => {}
-            StepResult::Call(meta, params) => {
-                println!("calling {} with {:?}", meta.opcode, params);
-            }
+            StepResult::Call(meta, args) => call_function(&mut machine, meta, args),
             StepResult::Exit => break,
             StepResult::Text(text) => {
                 println!(">> {}", text);
@@ -249,4 +309,47 @@ fn main() -> Result<(), MyError> {
     }
 
     Ok(())
+}
+
+#[allow(unused)]
+fn dump_used_functions(elements: &[Element]) {
+    let mut unique: HashMap<_, usize> = HashMap::new();
+    for element in elements {
+        if let Element::FunctionCall { meta, params: _ } = element {
+            *unique.entry((meta.module_type, meta.module, meta.opcode, meta.overload)).or_default() += 1;
+        }
+    }
+
+    println!("Total function calls: {}", unique.values().copied().sum::<usize>());
+    println!("Unique function calls: {}", unique.len());
+    let mut unique: Vec<_> = unique.into_iter().collect();
+    unique.sort_by_key(|&(_, count)| Reverse(count));
+    for (x, num) in unique {
+        println!("{}:{}:{}:{} -> {}", x.0, x.1, x.2, x.3, num);
+    }
+}
+
+fn call_function(machine: &mut Machine, meta: &CallMeta, args: Vec<Value>) {
+    match (meta.module_type, meta.module, meta.opcode, meta.overload) {
+        (0, 3, 17, 0) => { // ret_with(val)
+            machine.ret_with(args.into_iter().next().unwrap());
+        }
+        (0, 1, 18, 0) => { // far_call(scenario, entrypoint)
+            let scenario = args[0].as_int().unwrap();
+            let _entrypoint = args[1].as_int().unwrap();
+            machine.push_frame(StackFrame {
+                pointer: 0,
+                scenario: scenario as u32,
+            })
+        }
+        (1, 10, 4, 0) => { // strcmp
+            let lhs = args[0].as_str().unwrap();
+            let rhs = args[1].as_str().unwrap();
+            let result = lhs == rhs;
+            machine.memory.store = Value::Int(result as i32);
+        }
+        _ => {
+            println!("calling {:?} with args = {:?}", meta, args);
+        }
+    }
 }
