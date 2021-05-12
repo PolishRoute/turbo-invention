@@ -47,6 +47,15 @@ impl Memory {
             (8 | 11, Value::Int(x)) => {
                 self.int_banks[8][location] = x;
             }
+            (0x0a, Value::Str(x)) => { // K
+                self.str_banks[0][location] = x.to_string();
+            }
+            (0x0c, Value::Str(x)) => { // M
+                self.str_banks[1][location] = x.to_string();
+            }
+            (0x12, Value::Str(x)) => { // S
+                self.str_banks[2][location] = x.to_string();
+            }
             (bank, value) => todo!("setting {}[{}] to {:?}", bank, location, value),
         }
     }
@@ -84,8 +93,10 @@ impl Machine {
         self.call_stack.push(frame)
     }
 
-    fn ret_with(&mut self, val: Value) {
-        self.memory.store = val;
+    fn ret_with(&mut self, val: Option<Value>) {
+        if let Some(val) = val {
+            self.memory.store = val;
+        }
         self.call_stack.pop();
     }
 
@@ -114,7 +125,7 @@ impl<'s> std::fmt::Debug for Value {
 impl Value {
     fn as_str(&self) -> Option<&str> {
         match self {
-            Value::Str(s)  => Some(s),
+            Value::Str(s) => Some(s),
             Value::Bool(_) | Value::Int(_) => None,
         }
     }
@@ -139,7 +150,7 @@ enum StepResult<'bc> {
     Continue,
     Halt,
     Text(Cow<'bc, str>),
-    Call(&'bc CallMeta, Vec<Value>),
+    Call(&'bc CallMeta, &'bc [Expr]),
     Exit,
 }
 
@@ -243,20 +254,19 @@ fn step<'s>(machine: &mut Machine, scenarios: &'s [Scenario]) -> StepResult<'s> 
             StepResult::Text(Cow::Borrowed(text))
         }
         Element::FunctionCall { meta, params } => {
-            let args = params.iter().map(|p| evaluate_expr(p, machine)).collect();
             machine.frame_mut().unwrap().pointer += 1;
-            StepResult::Call(meta, args)
+            StepResult::Call(meta, params)
         }
         Element::GoSubWith { target, params, meta } => {
             frame.pointer += 1;
             let scenario_id = frame.scenario;
             machine.push_frame(StackFrame {
                 pointer: scenario.elements.partition_point(|p| p.0 < *target),
-                scenario: scenario_id
+                scenario: scenario_id,
             });
             println!("{} {:?} {:?} {}", target, params, meta, machine.frames());
             StepResult::Continue
-        },
+        }
         Element::Goto { target } => {
             frame.pointer = scenario.elements.partition_point(|p| p.0 < *target);
             StepResult::Continue
@@ -297,7 +307,7 @@ fn main() -> Result<(), MyError> {
         .collect();
 
     let mut machine = Machine::new(scenarios.iter().next().unwrap().id);
-    for _ in 0.. {
+    for _ in 0..1000 {
         match step(&mut machine, &scenarios) {
             StepResult::Continue | StepResult::Halt => {}
             StepResult::Call(meta, args) => call_function(&mut machine, meta, args),
@@ -329,27 +339,71 @@ fn dump_used_functions(elements: &[Element]) {
     }
 }
 
-fn call_function(machine: &mut Machine, meta: &CallMeta, args: Vec<Value>) {
+fn call_function(machine: &mut Machine, meta: &CallMeta, args: &[Expr]) {
+    let evaluated = args.iter().map(|it| (it, evaluate_expr(it, machine))).collect::<Vec<_>>();
     match (meta.module_type, meta.module, meta.opcode, meta.overload) {
-        (0, 3, 17, 0) => { // ret_with(val)
-            machine.ret_with(args.into_iter().next().unwrap());
+        (0, 1, 17, 1) => { // ret_with()
+            machine.ret_with(None);
         }
         (0, 1, 18, 0) => { // far_call(scenario, entrypoint)
-            let scenario = args[0].as_int().unwrap();
-            let _entrypoint = args[1].as_int().unwrap();
+            let scenario = evaluate_expr(&args[0], machine).as_int().unwrap();
+            let _entrypoint = evaluate_expr(&args[1], machine).as_int().unwrap();
             machine.push_frame(StackFrame {
                 pointer: 0,
                 scenario: scenario as u32,
             })
         }
-        (1, 10, 4, 0) => { // strcmp
-            let lhs = args[0].as_str().unwrap();
-            let rhs = args[1].as_str().unwrap();
-            let result = lhs == rhs;
+        (0, 1, 19, 0) => { // rtl(val)
+            let val = evaluate_expr(&args[0], machine);
+            machine.ret_with(Some(val));
+        }
+        (0, 1, 19, 1) => { // rtl(val)
+            machine.ret_with(None);
+        }
+        (0, 3, 17, 0) => { // pause
+            // TODO
+        }
+        (1, 10, 0, 0) | // hantozen
+        (1, 10, 2, 0) => { // strcat(dst, src)
+            let src = evaluate_expr(&args[1], machine);
+            match &args[0] {
+                Expr::MemRef { bank, location } => {
+                    let location = evaluate_expr(location, machine).as_int().unwrap();
+                    machine.memory.set(*bank, location as usize, src);
+                }
+                _ => unimplemented!(),
+            }
+        }
+        (1, 10, 4, 0) => { // strcmp(lhs, rhs)
+            let lhs = evaluate_expr(&args[0], machine);
+            let rhs = evaluate_expr(&args[1], machine);
+            let result = lhs.as_str() == rhs.as_str();
             machine.memory.store = Value::Int(result as i32);
         }
+        (1, 10, 5, 1) => { // strsub(dst, src, offset, length)
+            let src = evaluate_expr(&args[1], machine);
+            let src = src.as_str().unwrap();
+            let offset = evaluate_expr(&args[2], machine).as_int().unwrap() as usize;
+            let length = evaluate_expr(&args[3], machine).as_int().unwrap() as usize;
+            let result = src.chars().skip(offset).take(length).collect::<String>().into_boxed_str();
+            match &args[0] {
+                Expr::MemRef { bank, location } => {
+                    let location = evaluate_expr(location, machine).as_int().unwrap();
+                    machine.memory.set(*bank, location as usize, Value::Str(result));
+                }
+                _ => unimplemented!(),
+            }
+        }
+        (1, 10, 18, 0) => { // atoi(src)
+            let src = evaluate_expr(&args[0], machine);
+            let result = src.as_str().unwrap().trim().parse().unwrap_or(0);
+            machine.memory.store = Value::Int(result);
+        }
+        (1, 23, 0, 1) => { // play
+            println!("playing koe: {:?}", evaluated);
+        }
         _ => {
-            println!("calling {:?} with args = {:?}", meta, args);
+            println!("calling {:?} with args = {:?}", meta, evaluated);
         }
     }
 }
