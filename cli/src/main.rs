@@ -341,13 +341,13 @@ fn dump_used_functions(elements: &[Element]) {
 
 struct Operand {
     value: Value,
-    r#ref: Option<(MemoryBank, u32)>,
+    source: Option<(MemoryBank, u32)>,
 }
 
 impl std::fmt::Debug for Operand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.value)?;
-        if let Some((bank, location)) = self.r#ref {
+        if let Some((bank, location)) = self.source {
             write!(f, "~{:?}[{:?}]", bank, location)?;
         }
         Ok(())
@@ -361,12 +361,12 @@ fn call_function(machine: &mut Machine, meta: &CallMeta, args: &[Expr]) {
             let location = evaluate_expr(location, machine).as_int().unwrap() as u32;
             Operand {
                 value,
-                r#ref: Some((*bank, location)),
+                source: Some((*bank, location)),
             }
         } else {
             Operand {
                 value,
-                r#ref: None,
+                source: None,
             }
         }
     }).collect::<Vec<_>>();
