@@ -66,10 +66,18 @@ struct Machine {
     call_stack: Vec<StackFrame>,
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+enum FrameType {
+    Root,
+    GoSub,
+    FarCall,
+}
+
 #[derive(Debug)]
 struct StackFrame {
     pointer: usize,
     scenario: u32,
+    r#type: FrameType,
 }
 
 impl Machine {
@@ -80,6 +88,7 @@ impl Machine {
                 StackFrame {
                     pointer: 0,
                     scenario,
+                    r#type: FrameType::Root,
                 }
             ],
         }
@@ -93,11 +102,12 @@ impl Machine {
         self.call_stack.push(frame)
     }
 
-    fn ret_with(&mut self, val: Option<Value>) {
+    fn ret_with(&mut self, val: Option<Value>, frame_type: FrameType) {
         if let Some(val) = val {
             self.memory.store = val;
         }
-        self.call_stack.pop();
+        let frame = self.call_stack.pop().expect("call stack is empty");
+        assert_eq!(frame.r#type, frame_type);
     }
 
     fn frames(&self) -> usize {
@@ -263,6 +273,7 @@ fn step<'s>(machine: &mut Machine, scenarios: &'s [Scenario]) -> StepResult<'s> 
             machine.push_frame(StackFrame {
                 pointer: scenario.elements.partition_point(|p| p.0 < *target),
                 scenario: scenario_id,
+                r#type: FrameType::GoSub,
             });
             println!("{} {:?} {:?} {}", target, params, meta, machine.frames());
             StepResult::Continue
@@ -373,7 +384,7 @@ fn call_function(machine: &mut Machine, meta: &CallMeta, args: &[Expr]) {
 
     match (meta.module_type, meta.module, meta.opcode, meta.overload) {
         (0, 1, 17, 1) => { // ret_with()
-            machine.ret_with(None);
+            machine.ret_with(None, FrameType::GoSub);
         }
         (0, 1, 18, 0) => { // far_call(scenario, entrypoint)
             let scenario = evaluate_expr(&args[0], machine).as_int().unwrap();
@@ -381,14 +392,15 @@ fn call_function(machine: &mut Machine, meta: &CallMeta, args: &[Expr]) {
             machine.push_frame(StackFrame {
                 pointer: 0,
                 scenario: scenario as u32,
+                r#type: FrameType::FarCall,
             })
         }
         (0, 1, 19, 0) => { // rtl(val)
             let val = evaluate_expr(&args[0], machine);
-            machine.ret_with(Some(val));
+            machine.ret_with(Some(val), FrameType::FarCall);
         }
         (0, 1, 19, 1) => { // rtl(val)
-            machine.ret_with(None);
+            machine.ret_with(None, FrameType::FarCall);
         }
         (0, 3, 17, 0) => { // pause
             // TODO
