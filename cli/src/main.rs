@@ -110,6 +110,7 @@ impl Machine {
         assert_eq!(frame.r#type, frame_type);
     }
 
+    #[allow(unused)]
     fn frames(&self) -> usize {
         self.call_stack.len()
     }
@@ -267,7 +268,7 @@ fn step<'s>(machine: &mut Machine, scenarios: &'s [Scenario]) -> StepResult<'s> 
             machine.frame_mut().unwrap().pointer += 1;
             StepResult::Call(meta, params)
         }
-        Element::GoSubWith { target, params, meta } => {
+        Element::GoSubWith { target, params: _, meta: _ } => {
             frame.pointer += 1;
             let scenario_id = frame.scenario;
             machine.push_frame(StackFrame {
@@ -275,7 +276,6 @@ fn step<'s>(machine: &mut Machine, scenarios: &'s [Scenario]) -> StepResult<'s> 
                 scenario: scenario_id,
                 r#type: FrameType::GoSub,
             });
-            println!("{} {:?} {:?} {}", target, params, meta, machine.frames());
             StepResult::Continue
         }
         Element::Goto { target } => {
@@ -321,7 +321,7 @@ fn main() -> Result<(), MyError> {
     for _ in 0..1000 {
         match step(&mut machine, &scenarios) {
             StepResult::Continue | StepResult::Halt => {}
-            StepResult::Call(meta, args) => call_function(&mut machine, meta, args),
+            StepResult::Call(meta, args) => call_function(&mut machine, meta, args, &scenarios),
             StepResult::Exit => break,
             StepResult::Text(text) => {
                 println!(">> {}", text);
@@ -365,7 +365,7 @@ impl std::fmt::Debug for Operand {
     }
 }
 
-fn call_function(machine: &mut Machine, meta: &CallMeta, args: &[Expr]) {
+fn call_function(machine: &mut Machine, meta: &CallMeta, args: &[Expr], scenarios: &[Scenario]) {
     let evaluated = args.iter().map(|it| {
         let value = evaluate_expr(it, machine);
         if let Expr::MemRef { bank, location } = it {
@@ -383,27 +383,42 @@ fn call_function(machine: &mut Machine, meta: &CallMeta, args: &[Expr]) {
     }).collect::<Vec<_>>();
 
     match (meta.module_type, meta.module, meta.opcode, meta.overload) {
-        (0, 1, 17, 1) => { // ret_with()
-            machine.ret_with(None, FrameType::GoSub);
-        }
-        (0, 1, 18, 0) => { // far_call(scenario, entrypoint)
-            let scenario = evaluate_expr(&args[0], machine).as_int().unwrap();
-            let _entrypoint = evaluate_expr(&args[1], machine).as_int().unwrap();
+        (0, 1, 12, 1) => { // far_call(scenario, entrypoint)
+            let scenario_id = evaluate_expr(&args[0], machine).as_int().unwrap();
+            let entrypoint = evaluate_expr(&args[1], machine).as_int().unwrap();
+            println!("farcall({}, {})", scenario_id, entrypoint);
+
+            let scenario = scenarios.iter().find(|s| s.id == scenario_id as _).unwrap();
+            let target = scenario.elements.iter().find_map(|(offset, element)| match element {
+                &Element::Entrypoint(ep) if ep == entrypoint as _ => Some(*offset),
+                _ => None,
+            }).unwrap();
+
             machine.push_frame(StackFrame {
-                pointer: 0,
-                scenario: scenario as u32,
+                pointer: target,
+                scenario: scenario.id,
                 r#type: FrameType::FarCall,
-            })
+            });
+        }
+        (0, 1, 13, 0) => { // rtl
+            println!("rtl");
+            machine.ret_with(None, FrameType::FarCall);
+        }
+        (0, 1, 17, 1) => { // ret_with
+            println!("ret_with");
+            machine.ret_with(None, FrameType::GoSub);
         }
         (0, 1, 19, 0) => { // rtl(val)
             let val = evaluate_expr(&args[0], machine);
+            println!("rtl({:?})", val);
             machine.ret_with(Some(val), FrameType::FarCall);
         }
         (0, 1, 19, 1) => { // rtl(val)
+            println!("rtl");
             machine.ret_with(None, FrameType::FarCall);
         }
         (0, 3, 17, 0) => { // pause
-            // TODO
+            println!("pause: TODO");
         }
         (1, 10, 0, 0) | // hantozen
         (1, 10, 2, 0) => { // strcat(dst, src)
@@ -443,6 +458,24 @@ fn call_function(machine: &mut Machine, meta: &CallMeta, args: &[Expr]) {
         }
         (1, 23, 0, 1) => { // play
             println!("playing koe: {:?}", evaluated);
+        }
+        (1, 73, 3001, 0) => {
+            println!("menu_load: {:?}", evaluated);
+        }
+        (1, 81, 1050, 0) => {
+            println!("recLoad_0: {:?}", evaluated);
+        }
+        (1, 4, 110, 1) => {
+            println!("ResetTimer: {:?}", evaluated);
+        }
+        (1, 4, 114, 1) => {
+            println!("Timer: {:?}", evaluated);
+        }
+        (1, 81, 1049, 0) => {
+            println!("Rotate: {:?}", evaluated);
+        }
+        (1, 31, 0, 0) => {
+            println!("Refresh: {:?}", evaluated);
         }
         _ => {
             println!("calling {:?} with args = {:?}", meta, evaluated);
