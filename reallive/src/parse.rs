@@ -588,7 +588,7 @@ impl<'bc> Parser<'bc> {
                 self.expect(b'[');
                 let location = self.expr();
                 self.expect(b']');
-                Expr::MemRef { bank, location: Box::new(location) }
+                Expr::MemRef { bank: MemoryBank(bank), location: Box::new(location) }
             }
         } else if self.consume_exact(b'\\') {
             let op = self.consume().unwrap();
@@ -869,7 +869,7 @@ pub enum Expr {
     StoreRegister,
     IntConst { value: i32 },
     StringConst { value: Box<str> },
-    MemRef { bank: u8, location: Box<Self> },
+    MemRef { bank: MemoryBank, location: Box<Self> },
     Unary { op: Operator, expr: Box<Self> },
     Binary { op: Operator, lhs: Box<Self>, rhs: Box<Self> },
     Special { tag: u32, exprs: Box<[Self]> },
@@ -902,22 +902,33 @@ pub enum Operator {
     Unknown,
 }
 
+#[derive(Copy, Clone)]
+pub struct MemoryBank(pub u8);
+
+impl std::fmt::Debug for MemoryBank {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self.0 {
+            int @ 0..=6 => ((b'A' + int) as char).to_string(),
+            intzl @ 7..=8 => ((b'A' + intzl) as char).to_string(),
+            0x0a => "strK".to_string(),
+            0x0C => "strM".to_string(),
+            0x12 => "strS".to_string(),
+            25 => "intZ".to_string(),
+            11 => "intL".to_string(),
+            other => format!("unknown{}", other),
+        };
+        write!(f, "{}", s)
+    }
+}
+
+
 impl std::fmt::Debug for Expr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Expr::StoreRegister => write!(f, "register")?,
             Expr::IntConst { value } => write!(f, "{}", value)?,
             Expr::StringConst { value } => write!(f, "{:?}", value)?,
-            Expr::MemRef { bank, location } => write!(f, "{}[{:?}]", match bank {
-                int @ 0..=6 => ((b'A' + int) as char).to_string(),
-                intzl @ 7..=8 => ((b'A' + intzl) as char).to_string(),
-                0x0a => "strK".to_string(),
-                0x0C => "strM".to_string(),
-                0x12 => "strS".to_string(),
-                25 => "intZ".to_string(),
-                11 => "intL".to_string(),
-                other => format!("unknown{}", other),
-            }, location)?,
+            Expr::MemRef { bank, location } => write!(f, "{:?}[{:?}]", bank, location)?,
             Expr::Unary { op, expr } => write!(f, "{}{:?}", match op {
                 Operator::Plus => "+",
                 Operator::Minus => "-",

@@ -5,7 +5,7 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::fmt::Formatter;
 
-use reallive::{CallMeta, Element, Expr, Operator, read_archive};
+use reallive::{MemoryBank, CallMeta, Element, Expr, Operator, read_archive};
 
 type MyError = Box<dyn std::error::Error>;
 
@@ -24,22 +24,22 @@ impl Memory {
         }
     }
 
-    fn get(&self, bank: u8, location: usize) -> Value {
-        match bank {
-            0..=6 => Value::Int(self.int_banks[bank as usize][location]),
+    fn get(&self, bank: MemoryBank, location: usize) -> Value {
+        match bank.0 {
+            0..=6 => Value::Int(self.int_banks[bank.0 as usize][location]),
             7 | 25 => Value::Int(self.int_banks[7][location]), // Z
             8 | 11 => Value::Int(self.int_banks[8][location]), // L
             0x0a => Value::Str(self.str_banks[0][location].clone().into()), // K
             0x0c => Value::Str(self.str_banks[1][location].clone().into()), // M
             0x12 => Value::Str(self.str_banks[2][location].clone().into()), // S
-            _ => todo!("getting {}[{}]", bank, location),
+            _ => todo!("getting {:?}[{}]", bank, location),
         }
     }
 
-    fn set(&mut self, bank: u8, location: usize, value: Value) {
-        match (bank, value) {
+    fn set(&mut self, bank: MemoryBank, location: usize, value: Value) {
+        match (bank.0, value) {
             (0..=6, Value::Int(x)) => {
-                self.int_banks[bank as usize][location] = x;
+                self.int_banks[bank.0 as usize][location] = x;
             }
             (7 | 25, Value::Int(x)) => {
                 self.int_banks[7][location] = x;
@@ -339,8 +339,38 @@ fn dump_used_functions(elements: &[Element]) {
     }
 }
 
+struct Operand {
+    value: Value,
+    r#ref: Option<(MemoryBank, u32)>,
+}
+
+impl std::fmt::Debug for Operand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.value)?;
+        if let Some((bank, location)) = self.r#ref {
+            write!(f, "~{:?}[{:?}]", bank, location)?;
+        }
+        Ok(())
+    }
+}
+
 fn call_function(machine: &mut Machine, meta: &CallMeta, args: &[Expr]) {
-    let evaluated = args.iter().map(|it| (it, evaluate_expr(it, machine))).collect::<Vec<_>>();
+    let evaluated = args.iter().map(|it| {
+        let value = evaluate_expr(it, machine);
+        if let Expr::MemRef { bank, location } = it {
+            let location = evaluate_expr(location, machine).as_int().unwrap() as u32;
+            Operand {
+                value,
+                r#ref: Some((*bank, location)),
+            }
+        } else {
+            Operand {
+                value,
+                r#ref: None,
+            }
+        }
+    }).collect::<Vec<_>>();
+
     match (meta.module_type, meta.module, meta.opcode, meta.overload) {
         (0, 1, 17, 1) => { // ret_with()
             machine.ret_with(None);
