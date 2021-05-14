@@ -5,7 +5,9 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::fmt::Formatter;
 
-use reallive::{MemoryBank, CallMeta, Element, Expr, Operator, read_archive};
+use log::{debug, trace};
+
+use reallive::{CallMeta, Element, Expr, MemoryBank, Operator, read_archive};
 
 type MyError = Box<dyn std::error::Error>;
 
@@ -99,6 +101,7 @@ impl Machine {
     }
 
     fn push_frame(&mut self, frame: StackFrame) {
+        debug!("push {:?}", &frame);
         self.call_stack.push(frame)
     }
 
@@ -108,11 +111,7 @@ impl Machine {
         }
         let frame = self.call_stack.pop().expect("call stack is empty");
         assert_eq!(frame.r#type, frame_type);
-    }
-
-    #[allow(unused)]
-    fn frames(&self) -> usize {
-        self.call_stack.len()
+        debug!("pop {:?}", &frame);
     }
 }
 
@@ -165,6 +164,40 @@ enum StepResult<'bc> {
     Exit,
 }
 
+fn evaluate_binary_expr(lhs: &Expr, op: Operator, rhs: &Expr, machine: &mut Machine) -> Value {
+    if let Operator::Assign = op {
+        let (bank, location) = lhs.as_memory_location().unwrap();
+        let location = evaluate_expr(location, machine).as_int().unwrap() as usize;
+        let value = evaluate_expr(rhs, machine);
+        machine.memory.set(bank, location, value.clone());
+        return value;
+    } else {
+        match (evaluate_expr(lhs, machine), evaluate_expr(rhs, machine)) {
+            (Value::Int(lhs), Value::Int(rhs)) => {
+                match op {
+                    Operator::Asterisk => Value::Int(lhs * rhs),
+                    Operator::Plus => Value::Int(lhs + rhs),
+                    Operator::Minus => Value::Int(lhs - rhs),
+                    Operator::Slash => Value::Int(lhs / rhs),
+                    Operator::Greater => Value::Bool(lhs > rhs),
+                    Operator::GreaterEqual => Value::Bool(lhs >= rhs),
+                    Operator::LessEqual => Value::Bool(lhs <= rhs),
+                    Operator::Equal => Value::Bool(lhs == rhs),
+                    _ => todo!("{:?}", op),
+                }
+            }
+            (Value::Bool(lhs), Value::Bool(rhs)) => {
+                match op {
+                    Operator::And => Value::Bool(lhs && rhs),
+                    Operator::Or => Value::Bool(lhs || rhs),
+                    _ => todo!("{:?} on bool", op),
+                }
+            }
+            _ => todo!(),
+        }
+    }
+}
+
 fn evaluate_expr(expr: &Expr, machine: &mut Machine) -> Value {
     match expr {
         Expr::StoreRegister => machine.memory.store.clone(),
@@ -175,41 +208,7 @@ fn evaluate_expr(expr: &Expr, machine: &mut Machine) -> Value {
             machine.memory.get(*bank, location)
         }
         Expr::Binary { op, lhs, rhs } => {
-            if let Operator::Assign = op {
-                match lhs.as_ref() {
-                    Expr::MemRef { bank, location } => {
-                        let location = evaluate_expr(location, machine).as_int().unwrap() as usize;
-                        let value = evaluate_expr(rhs, machine);
-                        machine.memory.set(*bank, location, value.clone());
-                        return value;
-                    }
-                    _ => todo!(),
-                }
-            } else {
-                match (evaluate_expr(lhs, machine), evaluate_expr(rhs, machine)) {
-                    (Value::Int(lhs), Value::Int(rhs)) => {
-                        match op {
-                            Operator::Asterisk => Value::Int(lhs * rhs),
-                            Operator::Plus => Value::Int(lhs + rhs),
-                            Operator::Minus => Value::Int(lhs - rhs),
-                            Operator::Slash => Value::Int(lhs / rhs),
-                            Operator::Greater => Value::Bool(lhs > rhs),
-                            Operator::GreaterEqual => Value::Bool(lhs >= rhs),
-                            Operator::LessEqual => Value::Bool(lhs <= rhs),
-                            Operator::Equal => Value::Bool(lhs == rhs),
-                            _ => todo!("{:?}", op),
-                        }
-                    }
-                    (Value::Bool(lhs), Value::Bool(rhs)) => {
-                        match op {
-                            Operator::And => Value::Bool(lhs && rhs),
-                            Operator::Or => Value::Bool(lhs || rhs),
-                            _ => todo!("{:?} on bool", op),
-                        }
-                    }
-                    _ => todo!(),
-                }
-            }
+            evaluate_binary_expr(lhs, *op, rhs, machine)
         }
         Expr::Unary { op, expr } => {
             let value = evaluate_expr(expr, machine).as_int().unwrap();
@@ -223,6 +222,12 @@ fn evaluate_expr(expr: &Expr, machine: &mut Machine) -> Value {
     }
 }
 
+fn evaluate_place(expr: &Expr, machine: &mut Machine) -> (MemoryBank, usize) {
+    let (bank, location) = expr.as_memory_location().expect("lhs should a place in memory");
+    let location = evaluate_expr(location, machine).as_int().expect("not a valid location");
+    (bank, location as usize)
+}
+
 fn step<'s>(machine: &mut Machine, scenarios: &'s [Scenario]) -> StepResult<'s> {
     let mut frame = machine.frame_mut().unwrap();
 
@@ -233,11 +238,15 @@ fn step<'s>(machine: &mut Machine, scenarios: &'s [Scenario]) -> StepResult<'s> 
 
     let scenario = &scenarios[idx];
     let inst = match scenario.elements.get(frame.pointer) {
-        Some(x) => &x.1,
+        Some((_, inst)) => inst,
         None => return StepResult::Exit,
     };
 
-    // println!("{:?}", inst);
+    match inst {
+        Element::Halt | Element::Entrypoint(_) | Element::Kidoku(_) | Element::Line(_) => {}
+        _ => trace!("{}@{}: {:?}", frame.pointer, scenario.id, inst),
+    }
+
     match inst {
         Element::Halt => {
             frame.pointer += 1;
@@ -255,8 +264,22 @@ fn step<'s>(machine: &mut Machine, scenarios: &'s [Scenario]) -> StepResult<'s> 
             frame.pointer += 1;
             StepResult::Continue
         }
-        Element::Expr(e) => {
-            evaluate_expr(e, machine);
+        Element::Expr(expr) => {
+            match expr {
+                Expr::Binary { lhs, op: Operator::Assign, rhs } => {
+                    let (bank, location) = evaluate_place(lhs, machine);
+                    let result = evaluate_expr(rhs, machine);
+                    machine.memory.set(bank, location as _, result);
+                }
+                Expr::Binary { lhs, .. } => {
+                    debug!("found top-level binary expression. treating lhs as a place to store a result");
+                    let (bank, location) = evaluate_place(lhs, machine);
+                    let result = evaluate_expr(expr, machine);
+                    machine.memory.set(bank, location as _, result);
+                }
+                _ => todo!("{:?}", expr),
+            }
+
             machine.frame_mut().unwrap().pointer += 1;
             StepResult::Continue
         }
@@ -303,6 +326,7 @@ struct Scenario {
 }
 
 fn main() -> Result<(), MyError> {
+    env_logger::init();
     let path = std::env::args_os().nth(1).unwrap_or_else(|| {
         r"C:\Users\Host\Downloads\SEEN.txt".into()
     });
@@ -324,7 +348,7 @@ fn main() -> Result<(), MyError> {
             StepResult::Call(meta, args) => call_function(&mut machine, meta, args, &scenarios),
             StepResult::Exit => break,
             StepResult::Text(text) => {
-                println!(">> {}", text);
+                debug!(">> {}", text);
             }
         }
     }
@@ -386,14 +410,14 @@ fn call_function(machine: &mut Machine, meta: &CallMeta, args: &[Expr], scenario
         (0, 1, 12, 1) => { // far_call(scenario, entrypoint)
             let scenario_id = evaluate_expr(&args[0], machine).as_int().unwrap();
             let entrypoint = evaluate_expr(&args[1], machine).as_int().unwrap();
-            println!("farcall({}, {})", scenario_id, entrypoint);
+            debug!("farcall({}, {})", scenario_id, entrypoint);
 
             let scenario = scenarios.iter().find(|s| s.id == scenario_id as _).unwrap();
             let target = scenario.elements.iter().find_map(|(offset, element)| match element {
                 &Element::Entrypoint(ep) if ep == entrypoint as _ => Some(*offset),
                 _ => None,
             }).unwrap();
-
+            trace!("jumping to {}@{}", target, scenario_id);
             machine.push_frame(StackFrame {
                 pointer: target,
                 scenario: scenario.id,
@@ -401,24 +425,24 @@ fn call_function(machine: &mut Machine, meta: &CallMeta, args: &[Expr], scenario
             });
         }
         (0, 1, 13, 0) => { // rtl
-            println!("rtl");
+            debug!("rtl");
             machine.ret_with(None, FrameType::FarCall);
         }
         (0, 1, 17, 1) => { // ret_with
-            println!("ret_with");
+            debug!("ret_with");
             machine.ret_with(None, FrameType::GoSub);
         }
         (0, 1, 19, 0) => { // rtl(val)
             let val = evaluate_expr(&args[0], machine);
-            println!("rtl({:?})", val);
+            debug!("rtl({:?})", val);
             machine.ret_with(Some(val), FrameType::FarCall);
         }
         (0, 1, 19, 1) => { // rtl(val)
-            println!("rtl");
+            debug!("rtl");
             machine.ret_with(None, FrameType::FarCall);
         }
         (0, 3, 17, 0) => { // pause
-            println!("pause: TODO");
+            debug!("pause: TODO");
         }
         (1, 10, 0, 0) | // hantozen
         (1, 10, 2, 0) => { // strcat(dst, src)
@@ -457,28 +481,28 @@ fn call_function(machine: &mut Machine, meta: &CallMeta, args: &[Expr], scenario
             machine.memory.store = Value::Int(result);
         }
         (1, 23, 0, 1) => { // play
-            println!("playing koe: {:?}", evaluated);
+            debug!("playing koe: {:?}", evaluated);
         }
         (1, 73, 3001, 0) => {
-            println!("menu_load: {:?}", evaluated);
+            debug!("menu_load: {:?}", evaluated);
         }
         (1, 81, 1050, 0) => {
-            println!("recLoad_0: {:?}", evaluated);
+            debug!("recLoad_0: {:?}", evaluated);
         }
         (1, 4, 110, 1) => {
-            println!("ResetTimer: {:?}", evaluated);
+            debug!("ResetTimer: {:?}", evaluated);
         }
         (1, 4, 114, 1) => {
-            println!("Timer: {:?}", evaluated);
+            debug!("Timer: {:?}", evaluated);
         }
         (1, 81, 1049, 0) => {
-            println!("Rotate: {:?}", evaluated);
+            debug!("Rotate: {:?}", evaluated);
         }
         (1, 31, 0, 0) => {
-            println!("Refresh: {:?}", evaluated);
+            debug!("Refresh: {:?}", evaluated);
         }
         _ => {
-            println!("calling {:?} with args = {:?}", meta, evaluated);
+            debug!("calling {:?} with args = {:?}", meta, evaluated);
         }
     }
 }

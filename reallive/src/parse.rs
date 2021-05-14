@@ -876,9 +876,19 @@ pub enum Expr {
     Unknown { items: Box<[Expr]> },
 }
 
+impl Expr {
+    pub fn as_memory_location(&self) -> Option<(MemoryBank, &Expr)> {
+        match self {
+            Expr::MemRef { bank, location } => Some((*bank, location)),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 #[repr(u8)]
 #[derive(Copy, Clone)]
+#[derive(Eq, PartialEq)]
 pub enum Operator {
     Equal,
     NotEqual,
