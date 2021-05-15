@@ -5,7 +5,7 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::fmt::Formatter;
 
-use log::{debug, trace};
+use log::{debug, trace, warn};
 
 use reallive::{CallMeta, Element, Expr, MemoryBank, Operator, read_archive};
 
@@ -243,11 +243,6 @@ fn step<'s>(machine: &mut Machine, scenarios: &'s [Scenario]) -> StepResult<'s> 
     };
 
     match inst {
-        Element::Halt | Element::Entrypoint(_) | Element::Kidoku(_) | Element::Line(_) => {}
-        _ => trace!("{}@{}: {:?}", frame.pointer, scenario.id, inst),
-    }
-
-    match inst {
         Element::Halt => {
             frame.pointer += 1;
             StepResult::Halt
@@ -265,6 +260,7 @@ fn step<'s>(machine: &mut Machine, scenarios: &'s [Scenario]) -> StepResult<'s> 
             StepResult::Continue
         }
         Element::Expr(expr) => {
+            trace!("{}@{}: EXECUTE {:?}", frame.pointer, scenario.id, expr);
             match expr {
                 Expr::Binary { lhs, op: Operator::Assign, rhs } => {
                     let (bank, location) = evaluate_place(lhs, machine);
@@ -272,9 +268,10 @@ fn step<'s>(machine: &mut Machine, scenarios: &'s [Scenario]) -> StepResult<'s> 
                     machine.memory.set(bank, location as _, result);
                 }
                 Expr::Binary { lhs, .. } => {
-                    debug!("found top-level binary expression. treating lhs as a place to store a result");
                     let (bank, location) = evaluate_place(lhs, machine);
                     let result = evaluate_expr(expr, machine);
+                    debug!("found top-level binary expression. treating lhs as a place to store a result: {:?} = {:?}", lhs, expr);
+                    debug!("= {:?}", result);
                     machine.memory.set(bank, location as _, result);
                 }
                 _ => todo!("{:?}", expr),
@@ -284,31 +281,36 @@ fn step<'s>(machine: &mut Machine, scenarios: &'s [Scenario]) -> StepResult<'s> 
             StepResult::Continue
         }
         Element::Textout(text) => {
+            trace!("{}@{}: PRINT {:?}", frame.pointer, scenario.id, text);
             frame.pointer += 1;
             StepResult::Text(Cow::Borrowed(text))
         }
         Element::FunctionCall { meta, params } => {
+            trace!("{}@{}: CALL {:?} {:?}", frame.pointer, scenario.id, &meta, &params);
             machine.frame_mut().unwrap().pointer += 1;
             StepResult::Call(meta, params)
         }
-        Element::GoSubWith { target, params: _, meta: _ } => {
+        Element::GoSubWith { target, params, meta } => {
+            trace!("{}@{}: GOSUB_WITH {:?} {:?} -> {}", frame.pointer, scenario.id, meta, params, target);
             frame.pointer += 1;
             let scenario_id = frame.scenario;
             machine.push_frame(StackFrame {
-                pointer: scenario.elements.partition_point(|p| p.0 < *target),
+                pointer: scenario.index_of_instr(*target),
                 scenario: scenario_id,
                 r#type: FrameType::GoSub,
             });
             StepResult::Continue
         }
         Element::Goto { target } => {
-            frame.pointer = scenario.elements.partition_point(|p| p.0 < *target);
+            trace!("{}@{}: GOTO {}", frame.pointer, scenario.id, target);
+            frame.pointer = scenario.index_of_instr(*target);
             StepResult::Continue
         }
         Element::GotoIf { target, cond } => {
+            trace!("{}@{}: GOTO_IF {:?} -> {}", frame.pointer, scenario.id, cond, target);
             let cond = evaluate_expr(cond, machine).as_bool().unwrap();
             if cond {
-                machine.frame_mut().unwrap().pointer = scenario.elements.partition_point(|p| p.0 < *target);
+                machine.frame_mut().unwrap().pointer = scenario.index_of_instr(*target);
             } else {
                 machine.frame_mut().unwrap().pointer += 1;
             }
@@ -323,6 +325,19 @@ fn step<'s>(machine: &mut Machine, scenarios: &'s [Scenario]) -> StepResult<'s> 
 struct Scenario {
     id: u32,
     elements: Vec<(usize, Element)>,
+}
+
+impl Scenario {
+    fn index_of_instr(&self, offset: usize) -> usize {
+        let index = self.elements.partition_point(|p| p.0 < offset);
+        let nearest_offset = self.elements[index].0;
+        if nearest_offset != offset {
+            warn!("could not find index of the instruction at offset {} - using offset {} instead",
+                  offset, nearest_offset);
+        }
+        debug!("instruction at offset {} in scenario {} has index {}", nearest_offset, self.id, index);
+        index
+    }
 }
 
 fn main() -> Result<(), MyError> {
@@ -341,7 +356,7 @@ fn main() -> Result<(), MyError> {
         })
         .collect();
 
-    let mut machine = Machine::new(scenarios.iter().next().unwrap().id);
+    let mut machine = Machine::new(9030);
     for _ in 0..1000 {
         match step(&mut machine, &scenarios) {
             StepResult::Continue | StepResult::Halt => {}
