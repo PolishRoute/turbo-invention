@@ -405,21 +405,17 @@ impl std::fmt::Debug for Operand {
 }
 
 fn call_function(machine: &mut Machine, meta: &CallMeta, args: &[Expr], scenarios: &[Scenario]) {
-    let evaluated = args.iter().map(|it| {
-        let value = evaluate_expr(it, machine);
-        if let Expr::MemRef { bank, location } = it {
+    let evaluated: Vec<Operand> = args.iter().map(|expr| {
+        let value = evaluate_expr(expr, machine);
+        let source = if let Expr::MemRef { bank, location } = expr {
             let location = evaluate_expr(location, machine).as_int().unwrap() as u32;
-            Operand {
-                value,
-                source: Some((*bank, location)),
-            }
+            Some((*bank, location))
         } else {
-            Operand {
-                value,
-                source: None,
-            }
-        }
-    }).collect::<Vec<_>>();
+            None
+        };
+
+        Operand { value, source }
+    }).collect();
 
     match (meta.module_type, meta.module, meta.opcode, meta.overload) {
         (0, 1, 12, 1) => { // far_call(scenario, entrypoint)
