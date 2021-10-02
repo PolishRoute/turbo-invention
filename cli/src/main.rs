@@ -1,13 +1,13 @@
-#![feature(array_map)]
+#![feature(slice_group_by)]
 
 use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::HashMap;
-use std::fmt::Formatter;
+use std::fmt::{Formatter, Write};
 
 use log::{debug, trace, warn};
 
-use reallive::{CallMeta, Element, Expr, MemoryBank, Operator, read_archive};
+use reallive::{CallMeta, Element, Expr, MemoryBank, Operator, read_archive, parse_line};
 
 type MyError = Box<dyn std::error::Error>;
 
@@ -105,9 +105,9 @@ impl Machine {
         self.call_stack.push(frame)
     }
 
-    fn ret_with(&mut self, val: Option<Value>, frame_type: FrameType) {
-        if let Some(val) = val {
-            self.memory.store = val;
+    fn ret_with(&mut self, value: Option<Value>, frame_type: FrameType) {
+        if let Some(value) = value {
+            self.memory.store = value;
         }
         let frame = self.call_stack.pop().expect("call stack is empty");
         assert_eq!(frame.r#type, frame_type);
@@ -120,6 +120,8 @@ enum Value {
     Str(Box<str>),
     Int(i32),
     Bool(bool),
+    Tuple(Box<[Value]>),
+    Unknown,
 }
 
 impl<'s> std::fmt::Debug for Value {
@@ -128,6 +130,18 @@ impl<'s> std::fmt::Debug for Value {
             Value::Str(s) => write!(f, "{:?}", s),
             Value::Int(s) => write!(f, "{}", s),
             Value::Bool(s) => write!(f, "{:?}", s),
+            Value::Tuple(items) => {
+                write!(f, "(")?;
+                for (i, item) in items.iter().enumerate() {
+                    write!(f, "{:?}", item)?;
+                    if i != items.len() - 1 {
+                        write!(f, ", ")?;
+                    }
+                }
+                write!(f, ")")?;
+                Ok(())
+            }
+            Value::Unknown => write!(f, "???"),
         }
     }
 }
@@ -136,20 +150,20 @@ impl Value {
     fn as_str(&self) -> Option<&str> {
         match self {
             Value::Str(s) => Some(s),
-            Value::Bool(_) | Value::Int(_) => None,
+            Value::Bool(_) | Value::Int(_) | Value::Tuple(_) | Value::Unknown => None,
         }
     }
 
     fn as_int(&self) -> Option<i32> {
         match self {
-            Value::Str(_) | Value::Bool(_) => None,
+            Value::Str(_) | Value::Bool(_) | Value::Tuple(_) | Value::Unknown => None,
             Value::Int(s) => Some(*s),
         }
     }
 
     fn as_bool(&self) -> Option<bool> {
         match self {
-            Value::Str(_) | Value::Int(_) => None,
+            Value::Str(_) | Value::Int(_) | Value::Tuple(_) | Value::Unknown => None,
             Value::Bool(x) => Some(*x),
         }
     }
@@ -217,8 +231,13 @@ fn evaluate_expr(expr: &Expr, machine: &mut Machine) -> Value {
                 _ => todo!("{:?}", op),
             }
         }
-        Expr::Special { .. } => Value::Str("/*SPECIAL*/".into()),
-        Expr::Unknown { .. } => Value::Str("/*UNKNOWN*/".into()),
+        Expr::Special { .. } => Value::Unknown,
+        Expr::Tuple { elements: items } => {
+            let items: Vec<_> = items.iter()
+                .map(|it| evaluate_expr(it, machine))
+                .collect();
+            Value::Tuple(items.into_boxed_slice())
+        }
     }
 }
 

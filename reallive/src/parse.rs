@@ -787,7 +787,7 @@ impl<'bc> Parser<'bc> {
                 items.push(self.expr());
             }
             self.expect(b')');
-            Expr::Unknown { items: items.into_boxed_slice() }
+            Expr::Tuple { elements: items.into_boxed_slice() }
         } else {
             self.expr()
         }
@@ -873,7 +873,7 @@ pub enum Expr {
     Unary { op: Operator, expr: Box<Self> },
     Binary { op: Operator, lhs: Box<Self>, rhs: Box<Self> },
     Special { tag: u32, exprs: Box<[Self]> },
-    Unknown { items: Box<[Expr]> },
+    Tuple { elements: Box<[Expr]> },
 }
 
 impl Expr {
@@ -980,7 +980,19 @@ impl std::fmt::Debug for Expr {
                 }
                 write!(f, "}}")?;
             }
-            Expr::Unknown { items } => write!(f, "unknown {:?}", items)?,
+            Expr::Tuple { elements } => {
+                write!(f, "(")?;
+                let mut first = true;
+                for element in elements.iter() {
+                    if !first {
+                        write!(f, ", ")?;
+                    } else {
+                        first = false;
+                    }
+                    write!(f, "{:?}", element)?;
+                }
+                write!(f, ")")?;
+            }
         }
         Ok(())
     }
