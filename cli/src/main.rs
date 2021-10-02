@@ -531,6 +531,78 @@ fn call_function(machine: &mut Machine, meta: &CallMeta, args: &[Expr], scenario
         (1, 31, 0, 0) => {
             debug!("Refresh: {:?}", evaluated);
         }
+        (1, 4, 2250, 0) => {
+            debug!("SetAutoMode: {:?}", evaluated);
+        }
+        (1, 4, 2223, 0) => {
+            debug!("SetMessageSpeed: {:?}", evaluated);
+        }
+        (1, 4, 2224, 0) => {
+            debug!("SetMessageNoWait: {:?}", evaluated);
+        }
+        (1, 4, 2051, 0) => {
+            debug!("SetSkipAnimations: {:?}", evaluated);
+        }
+        (1, 4, 2227, 0) => {
+            debug!("SetBgmKoeFade: {:?}", evaluated);
+        }
+        (1, 4, 2226, 0) => {
+            debug!("SetBgmKoeFadeVol: {:?}", evaluated);
+        }
+        (1, 4, 2057, 0) => {
+            debug!("Unknown_2057: {:?}", evaluated);
+        }
+        (1, 4, 2056, 0) => {
+            debug!("Unknown_2056: {:?}", evaluated);
+        }
+        (0, 1, 11, 1) => {
+            debug!("jump: {:?}", evaluated);
+            let frame = machine.call_stack.last_mut().unwrap();
+            frame.scenario = evaluated[0].value.as_int().unwrap() as _;
+            frame.pointer = evaluated[1].value.as_int().unwrap() as _;
+        }
+        (1, 4, 1212, 1) => {
+            debug!("HideSyscom: {:?}", evaluated);
+        }
+        (1, 30, 22, 0) => {
+            debug!("DrawManual: {:?}", evaluated);
+        }
+        (1, 4, 101, 0) => {
+            debug!("waitC: {:?}", evaluated);
+        }
+        (1, 61, 10, 0) => {
+            debug!("objChildFg: {:?}", evaluated);
+        }
+        (1, 71, 1000, 0) => {
+            debug!("ObjFgCreation: {:?}", evaluated);
+        }
+        (1, 81, 1000, 0) => {
+            debug!("Unknown_1000: {:?}", evaluated);
+        }
+        (1, 81, 1039, 0) => {
+            debug!("objGetPattNo: {:?}", evaluated);
+        }
+        (1, 81, 1004, 0) => {
+            debug!("Unknown_1004: {:?}", evaluated);
+        }
+        (1, 4, 130, 0) => {
+            debug!("FlushClick: {:?}", evaluated);
+        }
+        (1, 4, 620, 0) => {
+            debug!("InitExFrames: {:?}", evaluated);
+        }
+        (1, 4, 630, 0) => {
+            debug!("ReadExFrames: {:?}", evaluated);
+        }
+        (1, 4, 133, 0) => {
+            debug!("GetCursorPos: {:?}", evaluated);
+        }
+        (1, 4, 800, 0) => {
+            debug!("index_series: {:?}", evaluated);
+        }
+        (1, 81, 1003, 0) => {
+            debug!("Unknown_1003: {:?}", evaluated);
+        }
         _ => {
             debug!("calling {:?} with args = {:?}", meta, evaluated);
         }
