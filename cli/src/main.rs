@@ -3,9 +3,10 @@
 use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::HashMap;
-use std::fmt::{Formatter, Write};
+use std::fmt::Formatter;
 
 use log::{debug, trace, warn};
+use rand::prelude::IteratorRandom;
 
 use reallive::{CallMeta, Element, Expr, MemoryBank, Operator, read_archive, parse_line};
 
@@ -110,8 +111,12 @@ impl Machine {
             self.memory.store = value;
         }
         let frame = self.call_stack.pop().expect("call stack is empty");
-        assert_eq!(frame.r#type, frame_type);
         debug!("pop {:?}", &frame);
+
+        if frame.r#type != frame_type {
+            log::error!("type mismatch: {:?} {:?}", frame.r#type, frame_type);
+            self.call_stack.push(frame);
+        }
     }
 }
 
@@ -197,6 +202,8 @@ fn evaluate_binary_expr(lhs: &Expr, op: Operator, rhs: &Expr, machine: &mut Mach
                     Operator::GreaterEqual => Value::Bool(lhs >= rhs),
                     Operator::LessEqual => Value::Bool(lhs <= rhs),
                     Operator::Equal => Value::Bool(lhs == rhs),
+                    Operator::Less => Value::Bool(lhs < rhs),
+                    Operator::NotEqual => Value::Bool(lhs != rhs),
                     _ => todo!("{:?}", op),
                 }
             }
@@ -228,15 +235,19 @@ fn evaluate_expr(expr: &Expr, machine: &mut Machine) -> Value {
             let value = evaluate_expr(expr, machine).as_int().unwrap();
             match op {
                 Operator::Minus => Value::Int(-value),
+                Operator::Unknown => {
+                    warn!("Unsupported operator {:?}", op);
+                    Value::Unknown
+                }
                 _ => todo!("{:?}", op),
             }
         }
         Expr::Special { .. } => Value::Unknown,
-        Expr::Tuple { elements: items } => {
-            let items: Vec<_> = items.iter()
+        Expr::Tuple { elements } => {
+            let elements: Vec<_> = elements.iter()
                 .map(|it| evaluate_expr(it, machine))
                 .collect();
-            Value::Tuple(items.into_boxed_slice())
+            Value::Tuple(elements.into_boxed_slice())
         }
     }
 }
@@ -258,10 +269,13 @@ fn step<'s>(machine: &mut Machine, scenarios: &'s [Scenario]) -> StepResult<'s> 
     let scenario = &scenarios[idx];
     let inst = match scenario.elements.get(frame.pointer) {
         Some((_, inst)) => inst,
-        None => return StepResult::Exit,
+        None => {
+            warn!("Instruction pointer out of range: {}", frame.pointer);
+            return StepResult::Exit
+        },
     };
 
-    match inst {
+    match dbg!(inst) {
         Element::Halt => {
             frame.pointer += 1;
             StepResult::Halt
@@ -327,7 +341,9 @@ fn step<'s>(machine: &mut Machine, scenarios: &'s [Scenario]) -> StepResult<'s> 
         }
         Element::GotoIf { target, cond } => {
             trace!("{}@{}: GOTO_IF {:?} -> {}", frame.pointer, scenario.id, cond, target);
+            let key = (frame.scenario, frame.pointer);
             let cond = evaluate_expr(cond, machine).as_bool().unwrap();
+            let cond = rand::random();
             if cond {
                 machine.frame_mut().unwrap().pointer = scenario.index_of_instr(*target);
             } else {
@@ -336,7 +352,32 @@ fn step<'s>(machine: &mut Machine, scenarios: &'s [Scenario]) -> StepResult<'s> 
             StepResult::Continue
         }
         Element::Select { .. } => todo!(),
-        Element::GotoCase { .. } => todo!(),
+        Element::GotoCase { cond, cases } => {
+            let actual = evaluate_expr(cond, machine).as_int().unwrap();
+            let mut default = None;
+            let mut matching = None;
+            for (case, target) in cases.iter() {
+                let case = match case {
+                    Some(expr) => evaluate_expr(expr, machine).as_int().unwrap(),
+                    None => {
+                        default = Some(*target);
+                        continue;
+                    }
+                };
+                if case == actual {
+                    matching = Some(*target);
+                    break;
+                }
+            }
+
+            let matching = cases.iter()
+                .choose(&mut rand::thread_rng())
+                .map(|it| it.1);
+
+            let target = matching.or(default).unwrap() as usize;
+            machine.frame_mut().unwrap().pointer = scenario.index_of_instr(target);
+            StepResult::Continue
+        }
         Element::Unknown0x0002000a { .. } => todo!(),
     }
 }
@@ -360,9 +401,9 @@ impl Scenario {
 }
 
 fn main() -> Result<(), MyError> {
-    env_logger::init();
+    pretty_env_logger::init();
     let path = std::env::args_os().nth(1).unwrap_or_else(|| {
-        r"C:\Users\Host\Downloads\SEEN.txt".into()
+        r"C:\mkd\Downloads\SEEN.txt".into()
     });
 
     let buffer = std::fs::read(path)?;
@@ -376,7 +417,7 @@ fn main() -> Result<(), MyError> {
         .collect();
 
     let mut machine = Machine::new(9030);
-    for _ in 0..1000 {
+    loop {
         match step(&mut machine, &scenarios) {
             StepResult::Continue | StepResult::Halt => {}
             StepResult::Call(meta, args) => call_function(&mut machine, meta, args, &scenarios),
@@ -454,11 +495,17 @@ fn call_function(machine: &mut Machine, meta: &CallMeta, args: &[Expr], scenario
                 r#type: FrameType::FarCall,
             });
         }
-        (0, 1, 13, 0) => { // rtl
+        (0, 1, 13, 0) => {
+            // rtl
             debug!("rtl");
             machine.ret_with(None, FrameType::FarCall);
         }
-        (0, 1, 17, 1) => { // ret_with
+        (0, 1, 10, 0) => {
+            debug!("ret: {:?}", evaluated);
+            machine.ret_with(None, FrameType::GoSub);
+        }
+        (0, 1, 17, 1) => {
+            // ret_with
             debug!("ret_with");
             machine.ret_with(None, FrameType::GoSub);
         }
@@ -467,11 +514,13 @@ fn call_function(machine: &mut Machine, meta: &CallMeta, args: &[Expr], scenario
             debug!("rtl({:?})", val);
             machine.ret_with(Some(val), FrameType::FarCall);
         }
-        (0, 1, 19, 1) => { // rtl(val)
+        (0, 1, 19, 1) => {
+            // rtl(val)
             debug!("rtl");
             machine.ret_with(None, FrameType::FarCall);
         }
-        (0, 3, 17, 0) => { // pause
+        (0, 3, 17, 0) => {
+            // pause
             debug!("pause: TODO");
         }
         (1, 10, 0, 0) | // hantozen
@@ -510,7 +559,8 @@ fn call_function(machine: &mut Machine, meta: &CallMeta, args: &[Expr], scenario
             let result = src.as_str().unwrap().trim().parse().unwrap_or(0);
             machine.memory.store = Value::Int(result);
         }
-        (1, 23, 0, 1) => { // play
+        (1, 23, 0, 1) => {
+            // play
             debug!("playing koe: {:?}", evaluated);
         }
         (1, 73, 3001, 0) => {
@@ -555,11 +605,21 @@ fn call_function(machine: &mut Machine, meta: &CallMeta, args: &[Expr], scenario
         (1, 4, 2056, 0) => {
             debug!("Unknown_2056: {:?}", evaluated);
         }
-        (0, 1, 11, 1) => {
+        (0, 1, 11, 0) => {
             debug!("jump: {:?}", evaluated);
             let frame = machine.call_stack.last_mut().unwrap();
             frame.scenario = evaluated[0].value.as_int().unwrap() as _;
-            frame.pointer = evaluated[1].value.as_int().unwrap() as _;
+            frame.pointer = 0;
+        }
+        (0, 1, 11, 1) => {
+            debug!("jump: {:?}", evaluated);
+            let scenario_id = evaluated[0].value.as_int().unwrap() as _;
+            let scenario = scenarios.iter().find(|s| s.id == scenario_id).unwrap();
+            let target = scenario.index_of_instr(evaluated[1].value.as_int().unwrap() as _);
+
+            let frame = machine.call_stack.last_mut().unwrap();
+            frame.scenario = scenario_id;
+            frame.pointer = target;
         }
         (1, 4, 1212, 1) => {
             debug!("HideSyscom: {:?}", evaluated);
@@ -583,7 +643,7 @@ fn call_function(machine: &mut Machine, meta: &CallMeta, args: &[Expr], scenario
             debug!("objGetPattNo: {:?}", evaluated);
         }
         (1, 81, 1004, 0) => {
-            debug!("Unknown_1004: {:?}", evaluated);
+            debug!("objShow: {:?}", evaluated);
         }
         (1, 4, 130, 0) => {
             debug!("FlushClick: {:?}", evaluated);
@@ -602,6 +662,57 @@ fn call_function(machine: &mut Machine, meta: &CallMeta, args: &[Expr], scenario
         }
         (1, 81, 1003, 0) => {
             debug!("Unknown_1003: {:?}", evaluated);
+        }
+        (1, 61, 10, 1) => {
+            debug!("objFgInit: {:?}", evaluated);
+        }
+        (1, 61, 11, 0) => {
+            debug!("objFgFreeInit: {:?}", evaluated);
+        }
+        (1, 30, 20, 0) => {
+            debug!("DrawAuto: {:?}", evaluated);
+        }
+        (1, 4, 1211, 1) => {
+            debug!("EnableSyscom: {:?}", evaluated);
+        }
+        (1, 33, 1201, 2 | 3) => {
+            debug!("recFill: {:?}", evaluated);
+        }
+        (1, 4, 300, 0) => {
+            debug!("Unknown_300: {:?}", evaluated);
+        }
+        (1, 4, 1231, 0) => {
+            debug!("Unknown_1231: {:?}", evaluated);
+        }
+        (1, 4, 3503, 0) => {
+            debug!("Unknown_3503: {:?}", evaluated);
+        }
+        (1, 4, 0, 0) => {
+            debug!("title: {:?}", evaluated);
+        }
+        (1, 33, 70, 0) => {
+            debug!("grpBuffer: {:?}", evaluated);
+        }
+        (1, 81, 1052, 0) => {
+            debug!("recDisplay: {:?}", evaluated);
+        }
+        (1, 81, 1021, 0) => {
+            debug!("objComposite: {:?}", evaluated);
+        }
+        (1, 4, 624, 0) => {
+            debug!("InitExFramesDecel: {:?}", evaluated);
+        }
+        (1, 81, 1048, 0) => {
+            debug!("Unknown_1048: {:?}", evaluated);
+        }
+        (1, 11, 4, 1) => {
+            debug!("setrng_stepped: {:?}", evaluated);
+        }
+        (1, 4, 2055, 0) => {
+            debug!("Unknown_2055: {:?}", evaluated);
+        }
+        (1, 71, 1003, 0) => {
+            debug!("objOfFileGan: {:?}", evaluated);
         }
         _ => {
             debug!("calling {:?} with args = {:?}", meta, evaluated);
